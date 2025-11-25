@@ -19,6 +19,7 @@ use crt_terminal::Terminal;
 
 const AMBER: [f32; 4] = [1.0, 0.7, 0.0, 1.0];
 const SELECTION_FG: [f32; 4] = [1.0, 0.3, 0.1, 1.0]; // Red-orange for selected text
+const PANE_PADDING: f32 = 8.0; // Pixels of padding around each pane's content
 
 #[derive(Clone, Copy, Debug, Default)]
 struct CellPos {
@@ -168,8 +169,9 @@ impl App {
         let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
 
         if let Some(rect) = rects.get(&pane_id) {
-            let pane_width = (rect.width * win_width as f32) as u32;
-            let pane_height = (rect.height * win_height as f32) as u32;
+            // Subtract padding from usable area
+            let pane_width = ((rect.width * win_width as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
+            let pane_height = ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
             let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
 
             match Terminal::new(cols, rows) {
@@ -199,8 +201,9 @@ impl App {
 
         for (pane_id, terminal) in &self.terminals {
             if let Some(rect) = rects.get(pane_id) {
-                let pane_width = (rect.width * win_width as f32) as u32;
-                let pane_height = (rect.height * win_height as f32) as u32;
+                // Subtract padding from usable area
+                let pane_width = ((rect.width * win_width as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
+                let pane_height = ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
                 let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
                 terminal.resize(cols, rows);
             }
@@ -226,8 +229,9 @@ impl App {
                 continue;
             };
 
-            let x_offset = rect.x * win_width as f32;
-            let y_offset = rect.y * win_height as f32;
+            // Add padding offset
+            let x_offset = rect.x * win_width as f32 + PANE_PADDING;
+            let y_offset = rect.y * win_height as f32 + PANE_PADDING;
 
             // Only show cursor in focused pane
             let is_focused = *pane_id == focused_pane;
@@ -314,13 +318,50 @@ impl App {
             pane_renders.push((x_offset, y_offset, cells));
         }
 
+        // Calculate separators from pane boundaries
+        let mut separators: Vec<(f32, f32, f32, bool)> = Vec::new();
+        if self.layout.panes().len() > 1 {
+            // Collect unique x and y boundaries (excluding window edges)
+            let mut x_bounds: Vec<f32> = Vec::new();
+            let mut y_bounds: Vec<f32> = Vec::new();
+
+            for rect in rects.values() {
+                let x_right = rect.x + rect.width;
+                let y_bottom = rect.y + rect.height;
+
+                // Add right edge if not at window edge
+                if x_right > 0.01 && x_right < 0.99 {
+                    let x_px = x_right * win_width as f32;
+                    if !x_bounds.iter().any(|&x| (x - x_px).abs() < 1.0) {
+                        x_bounds.push(x_px);
+                    }
+                }
+                // Add bottom edge if not at window edge
+                if y_bottom > 0.01 && y_bottom < 0.99 {
+                    let y_px = y_bottom * win_height as f32;
+                    if !y_bounds.iter().any(|&y| (y - y_px).abs() < 1.0) {
+                        y_bounds.push(y_px);
+                    }
+                }
+            }
+
+            // Create vertical separators
+            for x in x_bounds {
+                separators.push((x, 0.0, win_height as f32, true));
+            }
+            // Create horizontal separators
+            for y in y_bounds {
+                separators.push((0.0, y, win_width as f32, false));
+            }
+        }
+
         // Convert to the format render_panes expects
         let panes: Vec<(f32, f32, &[Vec<RenderCell>])> = pane_renders
             .iter()
             .map(|(x, y, cells)| (*x, *y, cells.as_slice()))
             .collect();
 
-        if let Err(e) = renderer.render_panes(&panes) {
+        if let Err(e) = renderer.render_panes(&panes, &separators) {
             tracing::error!("Render error: {}", e);
         }
     }
@@ -358,7 +399,7 @@ impl ApplicationHandler for App {
 
         let window_attrs = WindowAttributes::default()
             .with_title("cool-rust-term")
-            .with_inner_size(LogicalSize::new(800, 600));
+            .with_inner_size(LogicalSize::new(1200, 800));
 
         let window = Arc::new(
             event_loop
@@ -369,6 +410,16 @@ impl ApplicationHandler for App {
         // Initialize renderer
         let renderer = pollster::block_on(Renderer::new(Arc::clone(&window)))
             .expect("Failed to create renderer");
+
+        // Log scale factor for debugging
+        let scale_factor = window.scale_factor();
+        let physical_size = window.inner_size();
+        tracing::info!(
+            "Window created: {}x{} physical pixels, scale factor: {}",
+            physical_size.width,
+            physical_size.height,
+            scale_factor
+        );
 
         self.window = Some(window);
         self.renderer = Some(renderer);

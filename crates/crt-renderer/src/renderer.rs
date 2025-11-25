@@ -56,7 +56,7 @@ impl Renderer {
 
         // Load font - use IBM VGA for that authentic look
         let font_data = include_bytes!("../../../assets/fonts/1985-ibm-pc-vga/PxPlus_IBM_VGA8.ttf");
-        let mut atlas = GlyphAtlas::new(font_data, 24.0)?;
+        let mut atlas = GlyphAtlas::new(font_data, 18.0)?;
 
         // Pre-populate common ASCII characters
         for c in ' '..='~' {
@@ -68,6 +68,9 @@ impl Renderer {
         let _ = atlas.get_glyph('▐');
         let _ = atlas.get_glyph('▀');
         let _ = atlas.get_glyph('▄');
+        // Box drawing for separators
+        let _ = atlas.get_glyph('│');
+        let _ = atlas.get_glyph('─');
 
         let text_pipeline = TextPipeline::new(&gpu.device, &gpu.queue, gpu.config.format, &atlas);
 
@@ -258,9 +261,11 @@ impl Renderer {
 
     /// Render multiple panes, each with its pixel region and cells
     /// Each pane is (x_offset, y_offset, cells)
+    /// Separators are (x, y, length, is_vertical) in pixels
     pub fn render_panes(
         &mut self,
         panes: &[(f32, f32, &[Vec<RenderCell>])],
+        separators: &[(f32, f32, f32, bool)],
     ) -> Result<(), RenderError> {
         let (width, height) = self.gpu.size;
         let (cell_w, cell_h) = self.atlas.cell_size();
@@ -273,6 +278,7 @@ impl Renderer {
 
         let mut chars = Vec::new();
 
+        // Render pane contents
         for &(x_offset, y_offset, cells) in panes {
             for (row_idx, row) in cells.iter().enumerate() {
                 let baseline_y = y_offset + (row_idx as f32 * cell_h) + ascent;
@@ -284,6 +290,26 @@ impl Renderer {
 
                     let x = x_offset + col_idx as f32 * cell_w;
                     chars.push((cell.c, x, baseline_y, cell.fg));
+                }
+            }
+        }
+
+        // Render separators
+        let separator_color = [1.0, 0.7, 0.0, 0.8]; // Slightly transparent amber
+        for &(x, y, length, is_vertical) in separators {
+            if is_vertical {
+                // Draw vertical line using '│' characters
+                let mut cur_y = y;
+                while cur_y < y + length {
+                    chars.push(('│', x - cell_w / 2.0, cur_y + ascent, separator_color));
+                    cur_y += cell_h;
+                }
+            } else {
+                // Draw horizontal line using '─' characters
+                let mut cur_x = x;
+                while cur_x < x + length {
+                    chars.push(('─', cur_x, y + ascent / 2.0, separator_color));
+                    cur_x += cell_w;
                 }
             }
         }
