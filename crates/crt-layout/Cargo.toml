@@ -1,0 +1,10 @@
+[package]
+name = "crt-layout"
+description = "Pane layout and split management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crt-core = { workspace = true }
+thiserror = { workspace = true }

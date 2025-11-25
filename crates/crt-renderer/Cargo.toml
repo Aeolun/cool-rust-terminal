@@ -1,0 +1,15 @@
+[package]
+name = "crt-renderer"
+description = "GPU rendering and CRT shader effects"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crt-core = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
+fontdue = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+bytemuck = { workspace = true }

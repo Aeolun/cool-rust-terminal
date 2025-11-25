@@ -1,0 +1,13 @@
+[package]
+name = "crt-terminal"
+description = "Terminal emulation and PTY handling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crt-core = { workspace = true }
+alacritty_terminal = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

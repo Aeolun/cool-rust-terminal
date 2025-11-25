@@ -1,0 +1,25 @@
+[package]
+name = "crt-app"
+description = "Main application binary"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cool-rust-term"
+path = "src/main.rs"
+
+[dependencies]
+crt-core = { workspace = true }
+crt-terminal = { workspace = true }
+crt-layout = { workspace = true }
+crt-renderer = { workspace = true }
+alacritty_terminal = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+pollster = { workspace = true }
+arboard = "3"
