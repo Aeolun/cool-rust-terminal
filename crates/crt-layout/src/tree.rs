@@ -1,37 +1,13 @@
-// ABOUTME: Binary tree structure for terminal pane layout.
-// ABOUTME: Supports splitting, closing, resizing, and focus navigation.
+// ABOUTME: Automatic grid layout for terminal panes.
+// ABOUTME: Arranges N panes in a near-square grid, adapting to window aspect ratio.
 
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Direction {
-    Horizontal,
-    Vertical,
-}
-
-#[derive(Debug)]
-enum Node {
-    Pane(PaneId),
-    Split {
-        direction: Direction,
-        ratio: f32,
-        first: Box<Node>,
-        second: Box<Node>,
-    },
-}
-
-#[derive(Debug)]
-pub struct LayoutTree {
-    root: Node,
-    focused: PaneId,
-    next_id: u64,
-}
-
 /// Rectangle in normalized coordinates (0.0 to 1.0)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -50,11 +26,18 @@ impl Rect {
     }
 }
 
+#[derive(Debug)]
+pub struct LayoutTree {
+    panes: Vec<PaneId>,
+    focused: PaneId,
+    next_id: u64,
+}
+
 impl LayoutTree {
     pub fn new() -> Self {
         let id = PaneId(0);
         Self {
-            root: Node::Pane(id),
+            panes: vec![id],
             focused: id,
             next_id: 1,
         }
@@ -65,156 +48,117 @@ impl LayoutTree {
     }
 
     pub fn set_focus(&mut self, pane: PaneId) {
-        self.focused = pane;
-    }
-
-    /// Get all panes with their layout rectangles
-    pub fn pane_rects(&self) -> HashMap<PaneId, Rect> {
-        let mut result = HashMap::new();
-        collect_rects(&self.root, Rect::full(), &mut result);
-        result
-    }
-
-    /// Split the given pane, returns the new pane's ID
-    pub fn split(&mut self, pane: PaneId, direction: Direction) -> Option<PaneId> {
-        let new_id = PaneId(self.next_id);
-        self.next_id += 1;
-
-        if split_node(&mut self.root, pane, direction, new_id) {
-            self.focused = new_id;
-            Some(new_id)
-        } else {
-            None
+        if self.panes.contains(&pane) {
+            self.focused = pane;
         }
+    }
+
+    /// Add a new pane, returns its ID. New pane gets focus.
+    pub fn add_pane(&mut self) -> PaneId {
+        let id = PaneId(self.next_id);
+        self.next_id += 1;
+        self.panes.push(id);
+        self.focused = id;
+        id
     }
 
     /// Close a pane, returns the pane that should receive focus (if any remain)
     pub fn close(&mut self, pane: PaneId) -> Option<PaneId> {
-        if let Some(sibling_id) = close_node(&mut self.root, pane) {
-            self.focused = sibling_id;
-            Some(sibling_id)
+        if let Some(idx) = self.panes.iter().position(|&p| p == pane) {
+            self.panes.remove(idx);
+            if self.panes.is_empty() {
+                return None;
+            }
+            // Focus previous pane, or first if we removed index 0
+            let new_focus_idx = if idx > 0 { idx - 1 } else { 0 };
+            self.focused = self.panes[new_focus_idx];
+            Some(self.focused)
         } else {
             None
         }
     }
 
     /// Get all pane IDs
-    pub fn panes(&self) -> Vec<PaneId> {
-        let mut result = Vec::new();
-        collect_panes(&self.root, &mut result);
-        result
+    pub fn panes(&self) -> &[PaneId] {
+        &self.panes
+    }
+
+    /// Get all panes with their layout rectangles.
+    /// Layout adapts to aspect ratio: landscape = columns side-by-side, portrait = rows stacked.
+    pub fn pane_rects(&self, width: f32, height: f32) -> HashMap<PaneId, Rect> {
+        let n = self.panes.len();
+        if n == 0 {
+            return HashMap::new();
+        }
+
+        let landscape = width >= height;
+        let rects = compute_grid_rects(n, landscape);
+
+        self.panes
+            .iter()
+            .zip(rects)
+            .map(|(&id, rect)| (id, rect))
+            .collect()
     }
 }
 
-fn collect_rects(node: &Node, rect: Rect, out: &mut HashMap<PaneId, Rect>) {
-    match node {
-        Node::Pane(id) => {
-            out.insert(*id, rect);
-        }
-        Node::Split {
-            direction,
-            ratio,
-            first,
-            second,
-        } => {
-            let (first_rect, second_rect) = match direction {
-                Direction::Horizontal => (
-                    Rect {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width * ratio,
-                        height: rect.height,
-                    },
-                    Rect {
-                        x: rect.x + rect.width * ratio,
-                        y: rect.y,
-                        width: rect.width * (1.0 - ratio),
-                        height: rect.height,
-                    },
-                ),
-                Direction::Vertical => (
-                    Rect {
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height * ratio,
-                    },
-                    Rect {
-                        x: rect.x,
-                        y: rect.y + rect.height * ratio,
-                        width: rect.width,
-                        height: rect.height * (1.0 - ratio),
-                    },
-                ),
-            };
-            collect_rects(first, first_rect, out);
-            collect_rects(second, second_rect, out);
-        }
+/// Compute grid rectangles for N panes.
+/// If landscape, major axis is horizontal (columns side by side).
+/// If portrait, major axis is vertical (rows stacked).
+fn compute_grid_rects(n: usize, landscape: bool) -> Vec<Rect> {
+    if n == 0 {
+        return vec![];
     }
-}
-
-fn split_node(node: &mut Node, target: PaneId, direction: Direction, new_id: PaneId) -> bool {
-    match node {
-        Node::Pane(id) if *id == target => {
-            let old_pane = Node::Pane(*id);
-            let new_pane = Node::Pane(new_id);
-            *node = Node::Split {
-                direction,
-                ratio: 0.5,
-                first: Box::new(old_pane),
-                second: Box::new(new_pane),
-            };
-            true
-        }
-        Node::Pane(_) => false,
-        Node::Split { first, second, .. } => {
-            split_node(first, target, direction, new_id)
-                || split_node(second, target, direction, new_id)
-        }
+    if n == 1 {
+        return vec![Rect::full()];
     }
-}
 
-fn close_node(node: &mut Node, target: PaneId) -> Option<PaneId> {
-    match node {
-        Node::Pane(id) if *id == target => None,
-        Node::Pane(_) => None,
-        Node::Split { first, second, .. } => {
-            // Check if target is a direct child
-            if let Node::Pane(id) = first.as_ref() {
-                if *id == target {
-                    let sibling = std::mem::replace(second.as_mut(), Node::Pane(PaneId(0)));
-                    *node = sibling;
-                    return find_first_pane(node);
+    // Number of major divisions (columns for landscape, rows for portrait)
+    let major_count = (n as f32).sqrt().ceil() as usize;
+
+    // Calculate how many items go in each major division
+    // E.g., n=5, major_count=3: base=1, extra=2 → [1, 2, 2]
+    let base_per_major = n / major_count;
+    let extras = n % major_count;
+
+    let mut rects = Vec::with_capacity(n);
+
+    for major_idx in 0..major_count {
+        // Extras go to the last columns/rows
+        let items_in_this_major = if major_idx < major_count - extras {
+            base_per_major
+        } else {
+            base_per_major + 1
+        };
+
+        let major_start = major_idx as f32 / major_count as f32;
+        let major_size = 1.0 / major_count as f32;
+
+        for minor_idx in 0..items_in_this_major {
+            let minor_start = minor_idx as f32 / items_in_this_major as f32;
+            let minor_size = 1.0 / items_in_this_major as f32;
+
+            let rect = if landscape {
+                Rect {
+                    x: major_start,
+                    y: minor_start,
+                    width: major_size,
+                    height: minor_size,
                 }
-            }
-            if let Node::Pane(id) = second.as_ref() {
-                if *id == target {
-                    let sibling = std::mem::replace(first.as_mut(), Node::Pane(PaneId(0)));
-                    *node = sibling;
-                    return find_first_pane(node);
+            } else {
+                Rect {
+                    x: minor_start,
+                    y: major_start,
+                    width: minor_size,
+                    height: major_size,
                 }
-            }
-            // Recurse
-            close_node(first, target).or_else(|| close_node(second, target))
+            };
+
+            rects.push(rect);
         }
     }
-}
 
-fn find_first_pane(node: &Node) -> Option<PaneId> {
-    match node {
-        Node::Pane(id) => Some(*id),
-        Node::Split { first, .. } => find_first_pane(first),
-    }
-}
-
-fn collect_panes(node: &Node, out: &mut Vec<PaneId>) {
-    match node {
-        Node::Pane(id) => out.push(*id),
-        Node::Split { first, second, .. } => {
-            collect_panes(first, out);
-            collect_panes(second, out);
-        }
-    }
+    rects
 }
 
 impl Default for LayoutTree {
@@ -227,48 +171,250 @@ impl Default for LayoutTree {
 mod tests {
     use super::*;
 
+    fn approx_eq(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.001
+    }
+
+    fn rect_approx_eq(a: &Rect, b: &Rect) -> bool {
+        approx_eq(a.x, b.x)
+            && approx_eq(a.y, b.y)
+            && approx_eq(a.width, b.width)
+            && approx_eq(a.height, b.height)
+    }
+
     #[test]
-    fn new_tree_has_one_pane() {
+    fn single_pane_fills_entire_space() {
         let tree = LayoutTree::new();
+        let rects = tree.pane_rects(800.0, 600.0);
+
+        assert_eq!(rects.len(), 1);
+        let rect = rects.values().next().unwrap();
+        assert!(rect_approx_eq(rect, &Rect::full()));
+    }
+
+    #[test]
+    fn two_panes_landscape_side_by_side() {
+        let mut tree = LayoutTree::new();
+        tree.add_pane();
+
+        let rects = tree.pane_rects(800.0, 600.0); // landscape
+        assert_eq!(rects.len(), 2);
+
+        // Two columns, each taking half width
+        let mut sorted: Vec<_> = rects.values().collect();
+        sorted.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
+
+        assert!(rect_approx_eq(
+            sorted[0],
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0
+            }
+        ));
+        assert!(rect_approx_eq(
+            sorted[1],
+            &Rect {
+                x: 0.5,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0
+            }
+        ));
+    }
+
+    #[test]
+    fn two_panes_portrait_stacked() {
+        let mut tree = LayoutTree::new();
+        tree.add_pane();
+
+        let rects = tree.pane_rects(600.0, 800.0); // portrait
+        assert_eq!(rects.len(), 2);
+
+        // Two rows, each taking half height
+        let mut sorted: Vec<_> = rects.values().collect();
+        sorted.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap());
+
+        assert!(rect_approx_eq(
+            sorted[0],
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 0.5
+            }
+        ));
+        assert!(rect_approx_eq(
+            sorted[1],
+            &Rect {
+                x: 0.0,
+                y: 0.5,
+                width: 1.0,
+                height: 0.5
+            }
+        ));
+    }
+
+    #[test]
+    fn three_panes_landscape_one_two_layout() {
+        // 3 panes: 2 columns, first has 1, second has 2
+        let mut tree = LayoutTree::new();
+        tree.add_pane();
+        tree.add_pane();
+
+        let rects = tree.pane_rects(800.0, 600.0);
+        assert_eq!(rects.len(), 3);
+
+        let mut sorted: Vec<_> = rects.values().collect();
+        sorted.sort_by(|a, b| {
+            a.x.partial_cmp(&b.x)
+                .unwrap()
+                .then(a.y.partial_cmp(&b.y).unwrap())
+        });
+
+        // First column: full height
+        assert!(rect_approx_eq(
+            sorted[0],
+            &Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.5,
+                height: 1.0
+            }
+        ));
+        // Second column: two rows
+        assert!(rect_approx_eq(
+            sorted[1],
+            &Rect {
+                x: 0.5,
+                y: 0.0,
+                width: 0.5,
+                height: 0.5
+            }
+        ));
+        assert!(rect_approx_eq(
+            sorted[2],
+            &Rect {
+                x: 0.5,
+                y: 0.5,
+                width: 0.5,
+                height: 0.5
+            }
+        ));
+    }
+
+    #[test]
+    fn four_panes_two_by_two_grid() {
+        let mut tree = LayoutTree::new();
+        tree.add_pane();
+        tree.add_pane();
+        tree.add_pane();
+
+        let rects = tree.pane_rects(800.0, 600.0);
+        assert_eq!(rects.len(), 4);
+
+        // Should be 2x2 grid
+        for rect in rects.values() {
+            assert!(approx_eq(rect.width, 0.5));
+            assert!(approx_eq(rect.height, 0.5));
+        }
+    }
+
+    #[test]
+    fn five_panes_one_two_two_layout() {
+        // 5 panes: 3 columns with 1/2/2
+        let mut tree = LayoutTree::new();
+        for _ in 0..4 {
+            tree.add_pane();
+        }
+
+        let rects = tree.pane_rects(800.0, 600.0);
+        assert_eq!(rects.len(), 5);
+
+        let mut sorted: Vec<_> = rects.values().collect();
+        sorted.sort_by(|a, b| {
+            a.x.partial_cmp(&b.x)
+                .unwrap()
+                .then(a.y.partial_cmp(&b.y).unwrap())
+        });
+
+        // First column: full height (1 pane)
+        assert!(approx_eq(sorted[0].width, 1.0 / 3.0));
+        assert!(approx_eq(sorted[0].height, 1.0));
+
+        // Second column: 2 panes
+        assert!(approx_eq(sorted[1].width, 1.0 / 3.0));
+        assert!(approx_eq(sorted[1].height, 0.5));
+        assert!(approx_eq(sorted[2].height, 0.5));
+
+        // Third column: 2 panes
+        assert!(approx_eq(sorted[3].width, 1.0 / 3.0));
+        assert!(approx_eq(sorted[3].height, 0.5));
+        assert!(approx_eq(sorted[4].height, 0.5));
+    }
+
+    #[test]
+    fn six_panes_two_two_two_layout() {
+        let mut tree = LayoutTree::new();
+        for _ in 0..5 {
+            tree.add_pane();
+        }
+
+        let rects = tree.pane_rects(800.0, 600.0);
+        assert_eq!(rects.len(), 6);
+
+        // 3 columns, 2 each
+        for rect in rects.values() {
+            assert!(approx_eq(rect.width, 1.0 / 3.0));
+            assert!(approx_eq(rect.height, 0.5));
+        }
+    }
+
+    #[test]
+    fn add_pane_increases_count() {
+        let mut tree = LayoutTree::new();
         assert_eq!(tree.panes().len(), 1);
+
+        tree.add_pane();
+        assert_eq!(tree.panes().len(), 2);
+
+        tree.add_pane();
+        assert_eq!(tree.panes().len(), 3);
     }
 
     #[test]
-    fn split_creates_two_panes() {
+    fn close_pane_decreases_count() {
         let mut tree = LayoutTree::new();
         let first = tree.focused_pane();
-        let second = tree.split(first, Direction::Horizontal).unwrap();
+        let second = tree.add_pane();
 
-        let panes = tree.panes();
-        assert_eq!(panes.len(), 2);
-        assert!(panes.contains(&first));
-        assert!(panes.contains(&second));
-    }
-
-    #[test]
-    fn split_gives_equal_space() {
-        let mut tree = LayoutTree::new();
-        let first = tree.focused_pane();
-        let second = tree.split(first, Direction::Horizontal).unwrap();
-
-        let rects = tree.pane_rects();
-        let first_rect = rects.get(&first).unwrap();
-        let second_rect = rects.get(&second).unwrap();
-
-        assert!((first_rect.width - 0.5).abs() < 0.001);
-        assert!((second_rect.width - 0.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn close_removes_pane() {
-        let mut tree = LayoutTree::new();
-        let first = tree.focused_pane();
-        let second = tree.split(first, Direction::Horizontal).unwrap();
+        assert_eq!(tree.panes().len(), 2);
 
         tree.close(second);
+        assert_eq!(tree.panes().len(), 1);
+        assert!(tree.panes().contains(&first));
+    }
 
-        let panes = tree.panes();
-        assert_eq!(panes.len(), 1);
-        assert!(panes.contains(&first));
+    #[test]
+    fn close_updates_focus() {
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        let second = tree.add_pane();
+
+        assert_eq!(tree.focused_pane(), second);
+
+        tree.close(second);
+        assert_eq!(tree.focused_pane(), first);
+    }
+
+    #[test]
+    fn new_pane_gets_focus() {
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        assert_eq!(tree.focused_pane(), first);
+
+        let second = tree.add_pane();
+        assert_eq!(tree.focused_pane(), second);
     }
 }

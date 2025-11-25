@@ -1,6 +1,6 @@
-// ABOUTME: Pane layout and split management.
-// ABOUTME: Implements a binary tree of horizontal/vertical splits.
+// ABOUTME: Pane layout management for terminal emulator.
+// ABOUTME: Implements automatic grid layout that adapts to window aspect ratio.
 
 mod tree;
 
-pub use tree::{Direction, LayoutTree, PaneId};
+pub use tree::{LayoutTree, PaneId, Rect};
