@@ -13,3 +13,4 @@ fontdue = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 bytemuck = { workspace = true }
+image = "0.25"

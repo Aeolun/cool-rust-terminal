@@ -1,8 +1,11 @@
 // ABOUTME: Main application entry point.
 // ABOUTME: Sets up window, event loop, and coordinates terminal/rendering.
 
+mod config_ui;
+
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use arboard::Clipboard;
@@ -13,11 +16,73 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
+use config_ui::{ConfigAction, ConfigUI};
+use crt_core::{Config, ColorScheme};
 use crt_layout::{LayoutTree, PaneId};
-use crt_renderer::{RenderCell, Renderer};
+use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::Terminal;
 
-const AMBER: [f32; 4] = [1.0, 0.7, 0.0, 1.0];
+/// Convert an ANSI color from alacritty_terminal to our [f32; 4] format
+fn ansi_color_to_rgba(color: AnsiColor, scheme: &ColorScheme, is_dim: bool) -> [f32; 4] {
+    let base = match color {
+        AnsiColor::Named(named) => {
+            match named {
+                // Standard colors 0-7
+                NamedColor::Black => scheme.colors[0],
+                NamedColor::Red => scheme.colors[1],
+                NamedColor::Green => scheme.colors[2],
+                NamedColor::Yellow => scheme.colors[3],
+                NamedColor::Blue => scheme.colors[4],
+                NamedColor::Magenta => scheme.colors[5],
+                NamedColor::Cyan => scheme.colors[6],
+                NamedColor::White => scheme.colors[7],
+                // Bright colors 8-15
+                NamedColor::BrightBlack => scheme.colors[8],
+                NamedColor::BrightRed => scheme.colors[9],
+                NamedColor::BrightGreen => scheme.colors[10],
+                NamedColor::BrightYellow => scheme.colors[11],
+                NamedColor::BrightBlue => scheme.colors[12],
+                NamedColor::BrightMagenta => scheme.colors[13],
+                NamedColor::BrightCyan => scheme.colors[14],
+                NamedColor::BrightWhite => scheme.colors[15],
+                // Dim colors - use the base color at 60%
+                NamedColor::DimBlack => dim_color(scheme.colors[0]),
+                NamedColor::DimRed => dim_color(scheme.colors[1]),
+                NamedColor::DimGreen => dim_color(scheme.colors[2]),
+                NamedColor::DimYellow => dim_color(scheme.colors[3]),
+                NamedColor::DimBlue => dim_color(scheme.colors[4]),
+                NamedColor::DimMagenta => dim_color(scheme.colors[5]),
+                NamedColor::DimCyan => dim_color(scheme.colors[6]),
+                NamedColor::DimWhite => dim_color(scheme.colors[7]),
+                // Special colors
+                NamedColor::Foreground | NamedColor::BrightForeground => scheme.foreground,
+                NamedColor::DimForeground => dim_color(scheme.foreground),
+                NamedColor::Background => scheme.background,
+                NamedColor::Cursor => scheme.foreground, // Use foreground for cursor
+            }
+        }
+        AnsiColor::Spec(AnsiRgb { r, g, b }) => {
+            // True color RGB
+            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+        }
+        AnsiColor::Indexed(idx) => {
+            scheme.indexed_color(idx)
+        }
+    };
+
+    if is_dim {
+        dim_color(base)
+    } else {
+        base
+    }
+}
+
+/// Apply dim effect to a color (60% brightness)
+fn dim_color(color: [f32; 4]) -> [f32; 4] {
+    [color[0] * 0.6, color[1] * 0.6, color[2] * 0.6, color[3]]
+}
+
 const SELECTION_FG: [f32; 4] = [1.0, 0.3, 0.1, 1.0]; // Red-orange for selected text
 const PANE_PADDING: f32 = 8.0; // Pixels of padding around each pane's content
 
@@ -75,6 +140,8 @@ impl Selection {
     }
 }
 
+const RESIZE_INDICATOR_DURATION: Duration = Duration::from_millis(1000);
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -85,10 +152,17 @@ struct App {
     mouse_pos: (f64, f64),
     clipboard: Option<Clipboard>,
     last_grid: Vec<Vec<char>>,
+    last_resize: Option<Instant>,
+    config: Config,
+    config_ui: ConfigUI,
+    debug_grid: bool,
 }
 
 impl App {
     fn new() -> Self {
+        let config = Config::load_or_default();
+        tracing::info!("Loaded config: per_pane_crt={}", config.per_pane_crt);
+
         Self {
             window: None,
             renderer: None,
@@ -99,6 +173,10 @@ impl App {
             mouse_pos: (0.0, 0.0),
             clipboard: Clipboard::new().ok(),
             last_grid: Vec::new(),
+            last_resize: None,
+            config_ui: ConfigUI::new(config.clone()),
+            config,
+            debug_grid: false,
         }
     }
 
@@ -110,6 +188,17 @@ impl App {
         let col = (x / cell_w as f64).floor() as usize;
         let row = (y / cell_h as f64).floor() as usize;
         CellPos { col, row }
+    }
+
+    fn pixel_to_normalized(&self, x: f64, y: f64) -> (f32, f32) {
+        let Some(renderer) = &self.renderer else {
+            return (0.0, 0.0);
+        };
+        let (win_width, win_height) = renderer.window_size();
+        (
+            (x / win_width as f64) as f32,
+            (y / win_height as f64) as f32,
+        )
     }
 
     fn copy_selection(&mut self) {
@@ -215,6 +304,13 @@ impl App {
             return;
         };
 
+        // Get colors from active config (or preview config if UI is visible)
+        let color_scheme = if self.config_ui.visible {
+            self.config_ui.config.color_scheme.clone()
+        } else {
+            self.config.color_scheme.clone()
+        };
+
         let (win_width, win_height) = renderer.window_size();
         let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
         let focused_pane = self.layout.focused_pane();
@@ -278,29 +374,51 @@ impl App {
 
                         let is_cursor = is_focused && line_idx == cursor_line && col_idx == cursor_col;
                         let is_selected = is_focused && selection.contains(col_idx, line_idx);
+                        let is_dim = cell.flags.contains(Flags::DIM);
+                        let is_inverse = cell.flags.contains(Flags::INVERSE);
 
+                        // Get the cell's actual colors from terminal state
+                        let mut cell_fg = ansi_color_to_rgba(cell.fg, &color_scheme, is_dim);
+
+                        // Check if cell has an explicit background (not the default Background)
+                        let has_explicit_bg = !matches!(cell.bg, AnsiColor::Named(NamedColor::Background));
+                        let mut cell_bg = if has_explicit_bg {
+                            ansi_color_to_rgba(cell.bg, &color_scheme, false)
+                        } else {
+                            [0.0, 0.0, 0.0, 0.0] // Transparent for default background
+                        };
+
+                        // Handle inverse video (swap fg/bg)
+                        if is_inverse {
+                            // For inverse, if bg was transparent, use actual background color
+                            if !has_explicit_bg {
+                                cell_bg = color_scheme.background;
+                            }
+                            std::mem::swap(&mut cell_fg, &mut cell_bg);
+                        }
+
+                        // Apply special rendering states
                         let fg = if is_cursor {
-                            [0.0, 0.0, 0.0, 1.0]
+                            // Cursor: background color text on foreground color
+                            color_scheme.background
                         } else if is_selected {
                             SELECTION_FG
-                        } else if cell.flags.contains(Flags::DIM) {
-                            [0.6, 0.42, 0.0, 1.0]
                         } else {
-                            AMBER
+                            cell_fg
                         };
 
                         let bg = if is_cursor {
-                            AMBER
+                            color_scheme.foreground
                         } else {
-                            [0.0, 0.0, 0.0, 0.0]
+                            cell_bg
                         };
 
                         if is_cursor && (c == ' ' || c == '\0') {
                             c = '█';
                         }
 
-                        // For cursor block on empty cell, use amber foreground
-                        let final_fg = if is_cursor && c == '█' { AMBER } else { fg };
+                        // For cursor block on empty cell, use foreground color
+                        let final_fg = if is_cursor && c == '█' { color_scheme.foreground } else { fg };
 
                         row.push(RenderCell {
                             c,
@@ -319,39 +437,72 @@ impl App {
         }
 
         // Calculate separators from pane boundaries
+        // Format: (x, y, length, is_vertical)
         let mut separators: Vec<(f32, f32, f32, bool)> = Vec::new();
         if self.layout.panes().len() > 1 {
-            // Collect unique x and y boundaries (excluding window edges)
-            let mut x_bounds: Vec<f32> = Vec::new();
-            let mut y_bounds: Vec<f32> = Vec::new();
+            let rect_list: Vec<_> = rects.values().collect();
 
-            for rect in rects.values() {
-                let x_right = rect.x + rect.width;
-                let y_bottom = rect.y + rect.height;
+            // For each pair of panes, check if they share an edge
+            for i in 0..rect_list.len() {
+                for j in (i + 1)..rect_list.len() {
+                    let r1 = rect_list[i];
+                    let r2 = rect_list[j];
 
-                // Add right edge if not at window edge
-                if x_right > 0.01 && x_right < 0.99 {
-                    let x_px = x_right * win_width as f32;
-                    if !x_bounds.iter().any(|&x| (x - x_px).abs() < 1.0) {
-                        x_bounds.push(x_px);
+                    // Check for vertical separator (panes side by side)
+                    // r1's right edge meets r2's left edge
+                    let r1_right = r1.x + r1.width;
+                    let r2_right = r2.x + r2.width;
+
+                    if (r1_right - r2.x).abs() < 0.01 {
+                        // r1 is to the left of r2
+                        // Find overlapping Y range
+                        let y_start = r1.y.max(r2.y);
+                        let y_end = (r1.y + r1.height).min(r2.y + r2.height);
+                        if y_end > y_start {
+                            let x_px = r1_right * win_width as f32;
+                            let y_start_px = y_start * win_height as f32;
+                            let length = (y_end - y_start) * win_height as f32;
+                            separators.push((x_px, y_start_px, length, true));
+                        }
+                    } else if (r2_right - r1.x).abs() < 0.01 {
+                        // r2 is to the left of r1
+                        let y_start = r1.y.max(r2.y);
+                        let y_end = (r1.y + r1.height).min(r2.y + r2.height);
+                        if y_end > y_start {
+                            let x_px = r2_right * win_width as f32;
+                            let y_start_px = y_start * win_height as f32;
+                            let length = (y_end - y_start) * win_height as f32;
+                            separators.push((x_px, y_start_px, length, true));
+                        }
+                    }
+
+                    // Check for horizontal separator (panes stacked)
+                    // r1's bottom edge meets r2's top edge
+                    let r1_bottom = r1.y + r1.height;
+                    let r2_bottom = r2.y + r2.height;
+
+                    if (r1_bottom - r2.y).abs() < 0.01 {
+                        // r1 is above r2
+                        let x_start = r1.x.max(r2.x);
+                        let x_end = (r1.x + r1.width).min(r2.x + r2.width);
+                        if x_end > x_start {
+                            let y_px = r1_bottom * win_height as f32;
+                            let x_start_px = x_start * win_width as f32;
+                            let length = (x_end - x_start) * win_width as f32;
+                            separators.push((x_start_px, y_px, length, false));
+                        }
+                    } else if (r2_bottom - r1.y).abs() < 0.01 {
+                        // r2 is above r1
+                        let x_start = r1.x.max(r2.x);
+                        let x_end = (r1.x + r1.width).min(r2.x + r2.width);
+                        if x_end > x_start {
+                            let y_px = r2_bottom * win_height as f32;
+                            let x_start_px = x_start * win_width as f32;
+                            let length = (x_end - x_start) * win_width as f32;
+                            separators.push((x_start_px, y_px, length, false));
+                        }
                     }
                 }
-                // Add bottom edge if not at window edge
-                if y_bottom > 0.01 && y_bottom < 0.99 {
-                    let y_px = y_bottom * win_height as f32;
-                    if !y_bounds.iter().any(|&y| (y - y_px).abs() < 1.0) {
-                        y_bounds.push(y_px);
-                    }
-                }
-            }
-
-            // Create vertical separators
-            for x in x_bounds {
-                separators.push((x, 0.0, win_height as f32, true));
-            }
-            // Create horizontal separators
-            for y in y_bounds {
-                separators.push((0.0, y, win_width as f32, false));
             }
         }
 
@@ -361,12 +512,161 @@ impl App {
             .map(|(x, y, cells)| (*x, *y, cells.as_slice()))
             .collect();
 
-        if let Err(e) = renderer.render_panes(&panes, &separators) {
-            tracing::error!("Render error: {}", e);
+        // Calculate focus rectangle (only show when multiple panes)
+        let focus_rect = if self.layout.panes().len() > 1 {
+            rects.get(&focused_pane).map(|rect| {
+                (
+                    rect.x * win_width as f32,
+                    rect.y * win_height as f32,
+                    rect.width * win_width as f32,
+                    rect.height * win_height as f32,
+                )
+            })
+        } else {
+            None
+        };
+
+        // Calculate size indicators (show during resize)
+        let size_indicators: Vec<(f32, f32, String)> = if self
+            .last_resize
+            .is_some_and(|t| t.elapsed() < RESIZE_INDICATOR_DURATION)
+        {
+            self.layout
+                .panes()
+                .iter()
+                .filter_map(|pane_id| {
+                    let rect = rects.get(pane_id)?;
+                    let terminal = self.terminals.get(pane_id)?;
+                    let (cols, rows) = terminal.size();
+                    let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
+                    let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
+                    Some((center_x, center_y, format!("{}x{}", cols, rows)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Collect normalized pane rects for CRT shader and find focused pane index
+        let mut focused_pane_index: i32 = -1;
+        let pane_rects_normalized: Vec<(f32, f32, f32, f32)> = self
+            .layout
+            .panes()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, pane_id)| {
+                let rect = rects.get(pane_id)?;
+                if *pane_id == focused_pane {
+                    focused_pane_index = i as i32;
+                }
+                Some((rect.x, rect.y, rect.width, rect.height))
+            })
+            .collect();
+
+        // Get per_pane_crt from config (or config_ui if visible)
+        let per_pane_crt = if self.config_ui.visible {
+            self.config_ui.config.per_pane_crt
+        } else {
+            self.config.per_pane_crt
+        };
+
+        // If config UI is visible, render it instead of terminals
+        if self.config_ui.visible {
+            // Live preview font changes
+            let preview_font = self.config_ui.config.font;
+            let preview_font_size = self.config_ui.config.font_size;
+            if let Err(e) = renderer.set_font(preview_font, preview_font_size) {
+                tracing::error!("Failed to preview font: {}", e);
+            }
+
+            let (cell_w, cell_h) = renderer.cell_size();
+            let width_cells = (win_width as f32 / cell_w) as usize;
+            let height_cells = (win_height as f32 / cell_h) as usize;
+
+            let ui_cells = self.config_ui.render(width_cells, height_cells);
+            let ui_panes = vec![(0.0_f32, 0.0_f32, ui_cells.as_slice())];
+
+            // Use config_ui settings for live preview
+            let fg = self.config_ui.config.color_scheme.foreground;
+            let effects = EffectParams {
+                curvature: self.config_ui.config.effects.screen_curvature,
+                scanline_intensity: self.config_ui.config.effects.scanline_intensity,
+                bloom: self.config_ui.config.effects.bloom,
+                focus_glow_radius: self.config_ui.config.effects.focus_glow_radius,
+                focus_glow_width: self.config_ui.config.effects.focus_glow_width,
+                focus_glow_intensity: self.config_ui.config.effects.focus_glow_intensity,
+                static_noise: self.config_ui.config.effects.static_noise,
+                flicker: self.config_ui.config.effects.flicker,
+                brightness: self.config_ui.config.effects.brightness,
+                vignette: self.config_ui.config.effects.vignette,
+                bezel_enabled: self.config_ui.config.effects.bezel_enabled,
+                content_scale_x: self.config_ui.config.effects.content_scale_x,
+                content_scale_y: self.config_ui.config.effects.content_scale_y,
+                glow_color: [fg[0], fg[1], fg[2], 1.0],
+            };
+
+            // Use per_pane_crt from config UI so user can preview glow while adjusting
+            let ui_per_pane_crt = self.config_ui.config.per_pane_crt;
+
+            if let Err(e) = renderer.render_panes(
+                &ui_panes,
+                &[],
+                None,
+                &[],
+                &[(0.0, 0.0, 1.0, 1.0)],
+                ui_per_pane_crt,
+                self.debug_grid,
+                0,     // pane 0 is focused (the whole screen) so glow shows
+                effects,
+            ) {
+                tracing::error!("Config UI render error: {}", e);
+            }
+        } else {
+            // Ensure we're using the saved config's font (in case preview changed it)
+            if let Err(e) = renderer.set_font(self.config.font, self.config.font_size) {
+                tracing::error!("Failed to restore font: {}", e);
+            }
+
+            let fg = self.config.color_scheme.foreground;
+            let effects = EffectParams {
+                curvature: self.config.effects.screen_curvature,
+                scanline_intensity: self.config.effects.scanline_intensity,
+                bloom: self.config.effects.bloom,
+                focus_glow_radius: self.config.effects.focus_glow_radius,
+                focus_glow_width: self.config.effects.focus_glow_width,
+                focus_glow_intensity: self.config.effects.focus_glow_intensity,
+                static_noise: self.config.effects.static_noise,
+                flicker: self.config.effects.flicker,
+                brightness: self.config.effects.brightness,
+                vignette: self.config.effects.vignette,
+                bezel_enabled: self.config.effects.bezel_enabled,
+                content_scale_x: self.config.effects.content_scale_x,
+                content_scale_y: self.config.effects.content_scale_y,
+                glow_color: [fg[0], fg[1], fg[2], 1.0],
+            };
+
+            if let Err(e) = renderer.render_panes(
+                &panes,
+                &separators,
+                focus_rect,
+                &size_indicators,
+                &pane_rects_normalized,
+                per_pane_crt,
+                self.debug_grid,
+                focused_pane_index,
+                effects,
+            ) {
+                tracing::error!("Render error: {}", e);
+            }
         }
     }
 
     fn add_pane(&mut self) {
+        const MAX_PANES: usize = 16;
+        if self.layout.panes().len() >= MAX_PANES {
+            tracing::warn!("Maximum pane limit ({}) reached", MAX_PANES);
+            return;
+        }
         let new_pane_id = self.layout.add_pane();
         self.resize_terminals(); // Existing terminals need to shrink
         self.create_terminal_for_pane(new_pane_id);
@@ -407,9 +707,13 @@ impl ApplicationHandler for App {
                 .expect("Failed to create window"),
         );
 
-        // Initialize renderer
-        let renderer = pollster::block_on(Renderer::new(Arc::clone(&window)))
-            .expect("Failed to create renderer");
+        // Initialize renderer with font from config
+        let renderer = pollster::block_on(Renderer::new(
+            Arc::clone(&window),
+            self.config.font,
+            self.config.font_size,
+        ))
+        .expect("Failed to create renderer");
 
         // Log scale factor for debugging
         let scale_factor = window.scale_factor();
@@ -451,6 +755,7 @@ impl ApplicationHandler for App {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(new_size.width, new_size.height);
                     self.resize_terminals();
+                    self.last_resize = Some(Instant::now());
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -486,6 +791,24 @@ impl ApplicationHandler for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
+                            // Hit test to change focus
+                            if let Some(renderer) = &self.renderer {
+                                let (win_width, win_height) = renderer.window_size();
+                                let (norm_x, norm_y) =
+                                    self.pixel_to_normalized(self.mouse_pos.0, self.mouse_pos.1);
+                                if let Some(clicked_pane) = self.layout.hit_test(
+                                    norm_x,
+                                    norm_y,
+                                    win_width as f32,
+                                    win_height as f32,
+                                ) {
+                                    if clicked_pane != self.layout.focused_pane() {
+                                        self.layout.set_focus(clicked_pane);
+                                        tracing::info!("Focus changed to pane {:?}", clicked_pane);
+                                    }
+                                }
+                            }
+
                             let pos = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1);
                             self.selection.start = pos;
                             self.selection.end = pos;
@@ -507,6 +830,97 @@ impl ApplicationHandler for App {
                     // Shift+Ctrl+Enter: Add new pane
                     if ctrl && shift && event.logical_key == Key::Named(NamedKey::Enter) {
                         self.add_pane();
+                        return;
+                    }
+
+                    // Ctrl+, or Ctrl+Shift+P: Open config UI
+                    if (ctrl && event.logical_key == Key::Character(",".into()))
+                        || (ctrl && shift && event.logical_key == Key::Character("P".into()))
+                    {
+                        if self.config_ui.visible {
+                            self.config_ui.hide();
+                        } else {
+                            self.config_ui.show(&self.config);
+                        }
+                        return;
+                    }
+
+                    // Ctrl+Shift+G: Toggle debug grid
+                    if ctrl && shift && event.logical_key == Key::Character("G".into()) {
+                        self.debug_grid = !self.debug_grid;
+                        tracing::info!("Debug grid: {}", self.debug_grid);
+                        return;
+                    }
+
+                    // Handle config UI navigation when visible
+                    if self.config_ui.visible {
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                self.config = self.config_ui.cancel();
+                            }
+                            Key::Named(NamedKey::ArrowUp) => {
+                                self.config_ui.move_up();
+                            }
+                            Key::Named(NamedKey::ArrowDown) => {
+                                self.config_ui.move_down();
+                            }
+                            Key::Named(NamedKey::ArrowLeft) => {
+                                self.config_ui.adjust_left();
+                            }
+                            Key::Named(NamedKey::ArrowRight) => {
+                                self.config_ui.adjust_right();
+                            }
+                            Key::Named(NamedKey::Tab) => {
+                                if self.modifiers.shift_key() {
+                                    self.config_ui.prev_tab();
+                                } else {
+                                    self.config_ui.next_tab();
+                                }
+                            }
+                            Key::Character(c) if c == "1" => {
+                                self.config_ui.current_tab = crate::config_ui::ConfigTab::Effects;
+                                self.config_ui.selected = 0;
+                            }
+                            Key::Character(c) if c == "2" => {
+                                self.config_ui.current_tab = crate::config_ui::ConfigTab::Appearance;
+                                self.config_ui.selected = 0;
+                            }
+                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                                if let Some(action) = self.config_ui.toggle_or_activate() {
+                                    match action {
+                                        ConfigAction::Save => {
+                                            let new_config = self.config_ui.save();
+                                            // Update font if changed
+                                            if let Some(renderer) = &mut self.renderer {
+                                                if new_config.font != self.config.font
+                                                    || (new_config.font_size - self.config.font_size).abs() > 0.1
+                                                {
+                                                    if let Err(e) = renderer.set_font(new_config.font, new_config.font_size) {
+                                                        tracing::error!("Failed to change font: {}", e);
+                                                    } else {
+                                                        tracing::info!("Font changed to {} at {}px",
+                                                            new_config.font.label(), new_config.font_size);
+                                                        // Resize terminals for new font
+                                                        self.config = new_config.clone();
+                                                        self.resize_terminals();
+                                                    }
+                                                }
+                                            }
+                                            self.config = new_config;
+                                            if let Err(e) = self.config.save_to_default() {
+                                                tracing::error!("Failed to save config: {}", e);
+                                            } else {
+                                                tracing::info!("Config saved");
+                                            }
+                                        }
+                                        ConfigAction::Cancel => {
+                                            self.config = self.config_ui.cancel();
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                         return;
                     }
 

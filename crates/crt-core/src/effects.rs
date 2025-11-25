@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::Color;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct EffectSettings {
     /// Font/text color (phosphor color)
     pub font_color: Color,
@@ -42,6 +43,29 @@ pub struct EffectSettings {
 
     /// Overall brightness
     pub brightness: f32,
+
+    /// Vignette intensity - darkening toward screen edges (0.0 = none, 1.0 = strong)
+    pub vignette: f32,
+
+    /// Focus glow corner radius (0.0 = sharp corners, 0.2 = very rounded)
+    pub focus_glow_radius: f32,
+
+    /// Focus glow width - how far the glow extends inward (0.01 = thin, 0.2 = wide)
+    pub focus_glow_width: f32,
+
+    /// Focus glow intensity (0.0 = invisible, 1.0 = bright)
+    pub focus_glow_intensity: f32,
+
+    /// Enable CRT monitor bezel frame
+    pub bezel_enabled: bool,
+
+    /// Horizontal content scale - adjusts how wide the content is drawn
+    /// 1.0 = fills screen width, <1.0 = narrower (black bars on sides), >1.0 = wider (edges hidden)
+    pub content_scale_x: f32,
+
+    /// Vertical content scale - adjusts how tall the content is drawn
+    /// 1.0 = fills screen height, <1.0 = shorter (black bars top/bottom), >1.0 = taller (edges hidden)
+    pub content_scale_y: f32,
 }
 
 impl Default for EffectSettings {
@@ -57,15 +81,22 @@ impl EffectSettings {
             font_color: Color::AMBER,
             background_color: Color::rgba(0.0, 0.0, 0.0, 1.0),
             screen_curvature: 0.1,
-            scanline_intensity: 0.3,
+            scanline_intensity: 0.45,
             bloom: 0.4,
             burn_in: 0.4,
-            static_noise: 0.05,
-            flicker: 0.05,
+            static_noise: 0.02,
+            flicker: 0.25,
             horizontal_sync: 0.0,
             rgb_shift: 0.0,
             ambient_light: 0.1,
             brightness: 1.0,
+            vignette: 0.25,
+            focus_glow_radius: 0.01,
+            focus_glow_width: 0.005,
+            focus_glow_intensity: 0.4,
+            bezel_enabled: false,
+            content_scale_x: 1.0,
+            content_scale_y: 1.0,
         }
     }
 }

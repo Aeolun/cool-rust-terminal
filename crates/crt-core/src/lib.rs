@@ -6,5 +6,5 @@ pub mod config;
 pub mod effects;
 
 pub use color::Color;
-pub use config::Config;
+pub use config::{ColorScheme, Config, Font};
 pub use effects::EffectSettings;

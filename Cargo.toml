@@ -53,3 +53,6 @@ pollster = "0.4"
 
 # Math
 bytemuck = { version = "1", features = ["derive"] }
+
+# Platform utilities
+dirs = "5"

@@ -53,6 +53,21 @@ impl LayoutTree {
         }
     }
 
+    /// Hit test: given normalized coordinates (0.0-1.0), return the pane at that position
+    pub fn hit_test(&self, norm_x: f32, norm_y: f32, width: f32, height: f32) -> Option<PaneId> {
+        let rects = self.pane_rects(width, height);
+        for (pane_id, rect) in rects {
+            if norm_x >= rect.x
+                && norm_x < rect.x + rect.width
+                && norm_y >= rect.y
+                && norm_y < rect.y + rect.height
+            {
+                return Some(pane_id);
+            }
+        }
+        None
+    }
+
     /// Add a new pane, returns its ID. New pane gets focus.
     pub fn add_pane(&mut self) -> PaneId {
         let id = PaneId(self.next_id);
@@ -416,5 +431,42 @@ mod tests {
 
         let second = tree.add_pane();
         assert_eq!(tree.focused_pane(), second);
+    }
+
+    #[test]
+    fn hit_test_single_pane() {
+        let tree = LayoutTree::new();
+        let pane = tree.focused_pane();
+
+        // Any point in the window should hit the single pane
+        assert_eq!(tree.hit_test(0.0, 0.0, 800.0, 600.0), Some(pane));
+        assert_eq!(tree.hit_test(0.5, 0.5, 800.0, 600.0), Some(pane));
+        assert_eq!(tree.hit_test(0.99, 0.99, 800.0, 600.0), Some(pane));
+    }
+
+    #[test]
+    fn hit_test_two_panes_landscape() {
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        let second = tree.add_pane();
+
+        // In landscape (800x600), two panes are side-by-side
+        // First pane: x 0.0-0.5
+        // Second pane: x 0.5-1.0
+
+        // Click in left half should hit first pane
+        assert_eq!(tree.hit_test(0.25, 0.5, 800.0, 600.0), Some(first));
+
+        // Click in right half should hit second pane
+        assert_eq!(tree.hit_test(0.75, 0.5, 800.0, 600.0), Some(second));
+    }
+
+    #[test]
+    fn hit_test_out_of_bounds() {
+        let tree = LayoutTree::new();
+
+        // Points outside 0.0-1.0 should return None
+        assert_eq!(tree.hit_test(1.5, 0.5, 800.0, 600.0), None);
+        assert_eq!(tree.hit_test(-0.1, 0.5, 800.0, 600.0), None);
     }
 }
