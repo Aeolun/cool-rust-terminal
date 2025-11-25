@@ -18,20 +18,16 @@ A GPU-accelerated terminal emulator with CRT visual effects and tiling/split sup
 ┌──────────────────────────▼──────────────────────────────────────┐
 │                       Layout Manager                             │
 │                                                                  │
-│   Binary tree of splits. Each leaf = one terminal pane.         │
+│   Automatic grid layout. Arranges N panes in near-square grid.  │
+│   Adapts to window aspect ratio (landscape vs portrait).        │
 │                                                                  │
-│        ┌─────────┐                                              │
-│        │  Root   │                                              │
-│        │ (Hsplit)│                                              │
-│        └────┬────┘                                              │
-│        ┌────┴────┐                                              │
-│   ┌────▼───┐ ┌───▼────┐                                         │
-│   │ Pane 1 │ │ Vsplit │                                         │
-│   └────────┘ └───┬────┘                                         │
-│              ┌───┴───┐                                          │
-│         ┌────▼──┐ ┌──▼────┐                                     │
-│         │Pane 2 │ │Pane 3 │                                     │
-│         └───────┘ └───────┘                                     │
+│   Example: 5 panes in landscape (1/2/2 columns)                 │
+│   ┌───────┬───────┬───────┐                                     │
+│   │       │   2   │   4   │                                     │
+│   │   1   ├───────┼───────┤                                     │
+│   │       │   3   │   5   │                                     │
+│   └───────┴───────┴───────┘                                     │
+│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
                            │
                            │ Each pane owns:
@@ -78,37 +74,39 @@ A GPU-accelerated terminal emulator with CRT visual effects and tiling/split sup
 
 ## Key Design Decisions
 
-### 1. Layout Tree Structure
+### 1. Automatic Grid Layout
 
 ```rust
-enum LayoutNode {
-    Split {
-        direction: Direction,  // Horizontal | Vertical
-        ratio: f32,            // 0.0 - 1.0, position of split
-        first: Box<LayoutNode>,
-        second: Box<LayoutNode>,
-    },
-    Pane(PaneId),
+struct LayoutTree {
+    panes: Vec<PaneId>,
+    focused: PaneId,
+    next_id: u64,
 }
 ```
 
+The layout automatically arranges panes in a near-square grid:
+- Number of columns = `ceil(sqrt(n))`
+- Extra panes fill the last columns
+- Landscape windows: columns side-by-side
+- Portrait windows: rows stacked
+
 Operations:
-- `split_pane(pane_id, direction)` - splits a pane, new pane gets focus
-- `close_pane(pane_id)` - removes pane, sibling takes its space
-- `resize_split(pane_id, delta)` - adjust the split ratio
-- `navigate(direction)` - move focus to adjacent pane
+- `add_pane()` - adds a new pane, gets focus
+- `close(pane_id)` - removes pane, grid reflows
+- `pane_rects(width, height)` - calculates layout rectangles
 
 ### 2. Per-Pane vs Shared Rendering
 
-**Decision: Per-pane CRT effects**
+**Current: Shared CRT effect across all panes**
 
-Each pane gets its own:
-- Render texture
-- CRT effect chain
-- Burn-in buffer
+All panes render to a single offscreen texture, then CRT effects are applied
+to the whole thing. Amber separator lines drawn between panes.
 
-Why: Looks cooler. Each pane is its own "monitor". Also simpler - no need to
-coordinate effect state across panes.
+**Future option: Per-pane CRT effects**
+
+Each pane would get its own render texture and CRT effect chain, making each
+pane look like its own "monitor". Would require per-pane offscreen textures
+and a final compositor pass.
 
 ### 3. Burn-in Implementation
 
@@ -168,7 +166,7 @@ cool-rust-term/
    Available: IBM 3278, Terminus, Apple II, IBM PC BIOS, Commodore PET,
    Fixedsys, Hermit, C64, Inconsolata, ProFont, Atari 400/800, IBM VGA, ProggyTiny
 
-3. **Pane borders**: Plain gray separator lines
+3. **Pane borders**: Amber separator lines using box drawing characters
 
 4. **Effect presets**: Start with Amber only
 
@@ -176,12 +174,12 @@ cool-rust-term/
 
 ## Implementation Progress
 
-### Completed (Phase 1)
+### Completed (Phase 1 + Phase 2 partial)
 
 - [x] Cargo workspace with 5 crates (crt-core, crt-terminal, crt-layout, crt-renderer, crt-app)
 - [x] winit window + event loop
 - [x] wgpu device/surface initialization
-- [x] Glyph atlas using fontdue (IBM VGA font, 24px)
+- [x] Glyph atlas using fontdue (IBM VGA font, 18px)
 - [x] Text rendering shader (text.wgsl)
 - [x] Terminal emulation via alacritty_terminal 0.25
 - [x] PTY creation and I/O
@@ -199,29 +197,33 @@ cool-rust-term/
   - Flicker animation
   - Static noise
   - Vignette darkening at edges
+- [x] Automatic grid layout system (adapts to window aspect ratio)
+- [x] Multiple panes with independent terminals
+- [x] Shift+Ctrl+Enter to add new pane
+- [x] Shell exit closes pane, last pane closes app
+- [x] Amber separator lines between panes
+- [x] Pane content padding (8px)
 
 ### Known Issues
 
 - Only ASCII rendering supported (non-ASCII → '?')
 - Text selection doesn't show visual highlight (no background rendering yet)
 - CRT effect intensities are hardcoded (need config system)
+- No way to change focus between panes (click-to-focus not implemented)
 
 ### Next Steps
 
-**Phase 1 complete!**
-
-**Phase 2 - Core features:**
-3. Burn-in effect (ping-pong framebuffers)
-4. Full CRT shader chain (noise, flicker, RGB shift)
-5. Split/layout system integration
-6. Multiple panes with independent terminals
+**Phase 2 - Remaining:**
+- Burn-in effect (ping-pong framebuffers)
+- Click to change pane focus
+- Per-pane CRT effects (optional mode)
 
 **Phase 3 - Polish:**
-7. Config file loading (TOML)
-8. Font selection
-9. Effect intensity controls
-10. Scrollback with scrollbar
-11. ANSI color support (interpret terminal color escape codes)
+- Config file loading (TOML)
+- Font selection
+- Effect intensity controls
+- Scrollback with scrollbar
+- ANSI color support (interpret terminal color escape codes)
 
 ## Technical Notes
 
