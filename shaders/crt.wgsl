@@ -42,8 +42,9 @@ struct CrtUniforms {
     // Content scale - adjusts how big the content is drawn (like H-SIZE/V-SIZE knobs)
     content_scale_x: f32,
     content_scale_y: f32,
+    // Cell height in pixels for scanline alignment (one scanline per text row)
+    cell_height: f32,
     _pad1: f32,
-    _pad2: f32,
     // Focus glow color (follows font color) - vec4 for alignment (w ignored)
     glow_color: vec4<f32>,
     // Pane rects (max 16 panes)
@@ -105,21 +106,21 @@ fn temporal_noise(screen_pos: vec2<f32>, time: f32) -> f32 {
     return fract(h * 17.0 + sin(dot(p3.zxy, vec3<f32>(93.989, 67.345, 28.764))) * 23421.6312);
 }
 
-// Scanline effect - triangle wave aligned to screen pixels (like cool-retro-term)
-// With optional synchronized drift that moves whole scanlines
-fn scanline(uv: vec2<f32>, intensity: f32, screen_height: f32, time: f32) -> f32 {
-    // Use fract() to create screen-aligned scanlines
-    // Divide screen_height by 2 to get ~one scanline per 2 pixels (more visible)
-    let scanline_count = screen_height * 0.5;
+// Scanline effect - aligned to text rows for readable text
+// Each text row gets one scanline cycle, so dark bands fall BETWEEN rows, not through characters
+fn scanline(uv: vec2<f32>, intensity: f32, region_height: f32, time: f32) -> f32 {
+    // Calculate number of text rows in this region
+    // This aligns scanlines to character cells so text stays readable
+    let row_count = region_height / uniforms.cell_height;
 
     // Slow drift - moves in whole scanline increments to avoid moiré
-    // The fract() will handle the wrapping naturally
-    let drift = time * 0.5; // Slow roll speed
+    let drift = time * 0.3; // Slow roll speed
 
-    let screen_y = uv.y * scanline_count + drift;
-    let frac_y = fract(screen_y);
+    let row_y = uv.y * row_count + drift;
+    let frac_y = fract(row_y);
 
-    // Triangle wave: 0 at edges, 1 in middle of each scanline
+    // Triangle wave: brightest in middle of row (where text is), darkest at edges (between rows)
+    // This keeps text bright while darkening the gaps between lines
     let line_mask = 1.0 - abs(frac_y * 2.0 - 1.0);
 
     return 1.0 - intensity * (1.0 - line_mask);

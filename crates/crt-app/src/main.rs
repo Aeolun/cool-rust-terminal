@@ -11,7 +11,7 @@ use anyhow::Result;
 use arboard::Clipboard;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -83,7 +83,6 @@ fn dim_color(color: [f32; 4]) -> [f32; 4] {
     [color[0] * 0.6, color[1] * 0.6, color[2] * 0.6, color[3]]
 }
 
-const SELECTION_FG: [f32; 4] = [1.0, 0.3, 0.1, 1.0]; // Red-orange for selected text
 const PANE_PADDING: f32 = 8.0; // Pixels of padding around each pane's content
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -141,6 +140,7 @@ impl Selection {
 }
 
 const RESIZE_INDICATOR_DURATION: Duration = Duration::from_millis(1000);
+const SCROLL_INDICATOR_DURATION: Duration = Duration::from_millis(1500);
 
 struct App {
     window: Option<Arc<Window>>,
@@ -153,6 +153,7 @@ struct App {
     clipboard: Option<Clipboard>,
     last_grid: Vec<Vec<char>>,
     last_resize: Option<Instant>,
+    last_scroll: Option<Instant>,
     config: Config,
     config_ui: ConfigUI,
     debug_grid: bool,
@@ -174,6 +175,7 @@ impl App {
             clipboard: Clipboard::new().ok(),
             last_grid: Vec::new(),
             last_resize: None,
+            last_scroll: None,
             config_ui: ConfigUI::new(config.clone()),
             config,
             debug_grid: false,
@@ -397,20 +399,20 @@ impl App {
                             std::mem::swap(&mut cell_fg, &mut cell_bg);
                         }
 
-                        // Apply special rendering states
-                        let fg = if is_cursor {
+                        // Apply special rendering states (cursor and selection invert colors)
+                        let (fg, bg) = if is_cursor {
                             // Cursor: background color text on foreground color
-                            color_scheme.background
+                            (color_scheme.background, color_scheme.foreground)
                         } else if is_selected {
-                            SELECTION_FG
+                            // Selection: invert fg/bg (use scheme bg if cell bg is transparent)
+                            let sel_bg = if cell_bg[3] < 0.01 {
+                                color_scheme.background
+                            } else {
+                                cell_bg
+                            };
+                            (sel_bg, cell_fg)
                         } else {
-                            cell_fg
-                        };
-
-                        let bg = if is_cursor {
-                            color_scheme.foreground
-                        } else {
-                            cell_bg
+                            (cell_fg, cell_bg)
                         };
 
                         if is_cursor && (c == ' ' || c == '\0') {
@@ -526,26 +528,48 @@ impl App {
             None
         };
 
-        // Calculate size indicators (show during resize)
-        let size_indicators: Vec<(f32, f32, String)> = if self
+        // Calculate indicators (show during resize or scroll)
+        let show_resize = self
             .last_resize
-            .is_some_and(|t| t.elapsed() < RESIZE_INDICATOR_DURATION)
-        {
-            self.layout
-                .panes()
-                .iter()
-                .filter_map(|pane_id| {
-                    let rect = rects.get(pane_id)?;
-                    let terminal = self.terminals.get(pane_id)?;
+            .is_some_and(|t| t.elapsed() < RESIZE_INDICATOR_DURATION);
+        let show_scroll = self
+            .last_scroll
+            .is_some_and(|t| t.elapsed() < SCROLL_INDICATOR_DURATION);
+
+        let size_indicators: Vec<(f32, f32, String)> = self.layout
+            .panes()
+            .iter()
+            .filter_map(|pane_id| {
+                let rect = rects.get(pane_id)?;
+                let terminal = self.terminals.get(pane_id)?;
+                let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
+                let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
+
+                let offset = terminal.display_offset();
+                let history = terminal.history_size();
+
+                // Build indicator text based on what's active
+                let mut parts: Vec<String> = Vec::new();
+
+                if show_resize {
                     let (cols, rows) = terminal.size();
-                    let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
-                    let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
-                    Some((center_x, center_y, format!("{}x{}", cols, rows)))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                    parts.push(format!("{}x{}", cols, rows));
+                }
+
+                if show_scroll && offset > 0 {
+                    parts.push(format!("[{}/{}]", offset, history));
+                } else if offset > 0 {
+                    // Always show scroll position if not at bottom (subtle indicator)
+                    parts.push(format!("[{}/{}]", offset, history));
+                }
+
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some((center_x, center_y, parts.join(" ")))
+                }
+            })
+            .collect();
 
         // Collect normalized pane rects for CRT shader and find focused pane index
         let mut focused_pane_index: i32 = -1;
@@ -592,6 +616,7 @@ impl App {
                 curvature: self.config_ui.config.effects.screen_curvature,
                 scanline_intensity: self.config_ui.config.effects.scanline_intensity,
                 bloom: self.config_ui.config.effects.bloom,
+                burn_in: self.config_ui.config.effects.burn_in,
                 focus_glow_radius: self.config_ui.config.effects.focus_glow_radius,
                 focus_glow_width: self.config_ui.config.effects.focus_glow_width,
                 focus_glow_intensity: self.config_ui.config.effects.focus_glow_intensity,
@@ -632,6 +657,7 @@ impl App {
                 curvature: self.config.effects.screen_curvature,
                 scanline_intensity: self.config.effects.scanline_intensity,
                 bloom: self.config.effects.bloom,
+                burn_in: self.config.effects.burn_in,
                 focus_glow_radius: self.config.effects.focus_glow_radius,
                 focus_glow_width: self.config.effects.focus_glow_width,
                 focus_glow_intensity: self.config.effects.focus_glow_intensity,
@@ -822,6 +848,20 @@ impl ApplicationHandler for App {
                     }
                 }
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Scroll the focused terminal
+                let focused = self.layout.focused_pane();
+                if let Some(terminal) = self.terminals.get(&focused) {
+                    let lines = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -y as i32 * 3,
+                        MouseScrollDelta::PixelDelta(pos) => -(pos.y / 20.0) as i32,
+                    };
+                    if lines != 0 {
+                        terminal.scroll(lines);
+                        self.last_scroll = Some(Instant::now());
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     let ctrl = self.modifiers.control_key();
@@ -849,6 +889,24 @@ impl ApplicationHandler for App {
                     if ctrl && shift && event.logical_key == Key::Character("G".into()) {
                         self.debug_grid = !self.debug_grid;
                         tracing::info!("Debug grid: {}", self.debug_grid);
+                        return;
+                    }
+
+                    // Shift+PageUp/PageDown: Scroll history
+                    if shift && !ctrl && event.logical_key == Key::Named(NamedKey::PageUp) {
+                        let focused = self.layout.focused_pane();
+                        if let Some(terminal) = self.terminals.get(&focused) {
+                            terminal.scroll_page_up();
+                            self.last_scroll = Some(Instant::now());
+                        }
+                        return;
+                    }
+                    if shift && !ctrl && event.logical_key == Key::Named(NamedKey::PageDown) {
+                        let focused = self.layout.focused_pane();
+                        if let Some(terminal) = self.terminals.get(&focused) {
+                            terminal.scroll_page_down();
+                            self.last_scroll = Some(Instant::now());
+                        }
                         return;
                     }
 
@@ -972,6 +1030,8 @@ impl ApplicationHandler for App {
                         };
 
                         if let Some(bytes) = bytes {
+                            // Auto-scroll to bottom when typing
+                            terminal.scroll_to_bottom();
                             terminal.input(&bytes);
                         }
                     }

@@ -144,6 +144,8 @@ Mouse → hit-test layout tree → target pane
 - `Ctrl+Shift+G` - Toggle debug grid (shows cell boundaries)
 - `Ctrl+Shift+C` - Copy selection
 - `Ctrl+Shift+V` - Paste
+- `Shift+PageUp` / `Shift+PageDown` - Scroll history
+- Mouse wheel - Scroll history
 - Click on pane - Focus that pane
 
 ## Crate Structure
@@ -222,57 +224,31 @@ cool-rust-term/
 - [x] Synchronized scanline drift (moves whole scanlines to avoid moiré)
 - [x] Config UI overlay (text-based, Ctrl+, to toggle)
 - [x] Live preview of settings in config UI
-- [x] All CRT effects wired to config: curvature, scanlines, bloom, static, flicker, brightness
+- [x] All CRT effects wired to config: curvature, scanlines, bloom, burn-in, static, flicker, brightness
 - [x] Focus glow settings in config: radius, width, intensity
 - [x] Debug grid toggle (Ctrl+Shift+G) - draws 1px lines at cell boundaries
+- [x] Text selection with visual highlight (inverted colors from color scheme)
+- [x] Full ANSI color support:
+  - 16 named colors mapped through ColorScheme
+  - 256-color palette (16 scheme + 216 color cube + 24 grayscale)
+  - True color (24-bit RGB)
+  - Dim, inverse video, and all SGR attributes
+- [x] Font selection with 13 bundled fonts (retro + modern)
+- [x] Color scheme presets (Amber, Green, White, ANSI)
+- [x] Scrollback buffer (10,000 lines):
+  - Mouse wheel scrolling
+  - Shift+PageUp/PageDown for page scrolling
+  - Scroll position indicator popup [offset/history]
+  - Auto-scroll to bottom on keyboard input
 
 ### Known Issues
 
 - Only ASCII rendering supported (non-ASCII → '?')
-- Text selection doesn't show visual highlight (no background rendering yet)
-- Burn-in effect not yet wired to config (hardcoded decay values)
 
 ### Next Steps
 
-**Phase 3 - Config UI with iced:**
-
-Implement a configuration UI overlay using iced (Rust GUI framework) that renders
-on top of the terminal with live preview of settings.
-
-**Approach:**
-1. Use `iced_wgpu` to share the existing wgpu device/surface
-2. Render terminal first (possibly dimmed when config open)
-3. Render iced widgets as overlay on top
-4. Route input to iced when config UI is visible
-5. Changes apply live as sliders are dragged
-
-**Config UI Features:**
-- Sliders for: curvature, scanlines, bloom, burn-in, static noise, flicker, brightness
-- Toggle for per-pane CRT mode
-- Color picker for phosphor color (amber, green, white presets)
-- Font selection dropdown
-- Save/Cancel buttons
-- Semi-transparent overlay so terminal is visible behind
-
-**Implementation Steps:**
-1. Add iced dependencies: `iced_wgpu`, `iced_runtime`, `iced_widget`
-2. Create `IcedIntegration` struct that shares wgpu device with renderer
-3. Build `ConfigOverlay` iced application with all the widgets
-4. Integrate into event loop - render terminal, then render iced on top
-5. Wire slider changes to live-update `Config` and re-render terminal
-
-**Files to create/modify:**
-- `crates/crt-app/src/iced_integration.rs` - wgpu sharing layer
-- `crates/crt-app/src/config_overlay.rs` - iced UI definition
-- `crates/crt-app/src/main.rs` - integrate into event loop
-
-**Keyboard shortcut:** Ctrl+, to toggle config overlay
-
 **Phase 4 - Polish:**
-- Font selection (load TTF files from assets)
-- Scrollback with scrollbar
-- ANSI color support (interpret terminal color escape codes)
-- Effect presets (Amber, Green, White, Custom)
+- BDF bitmap font support (skip rasterizer, write directly to atlas)
 
 ### 6. Configuration System
 
@@ -307,12 +283,10 @@ pub struct EffectSettings {
 Config loading: `Config::load_or_default()` - loads from default path or returns defaults
 Config saving: `config.save_to_default()` - creates directories and saves TOML
 
-**Status:** Most config values are now wired to the CRT shader via `EffectParams`:
-- curvature, scanline_intensity, bloom, static_noise, flicker, brightness
+**Status:** All config values are now wired to the CRT shader via `EffectParams`:
+- curvature, scanline_intensity, bloom, burn_in, static_noise, flicker, brightness
 - focus_glow_radius, focus_glow_width, focus_glow_intensity
 - per_pane_crt mode
-
-**Not yet wired:** burn_in (hardcoded in burnin_pipeline)
 
 ## Recent Changes (Session Notes)
 
@@ -353,12 +327,18 @@ Config saving: `config.save_to_default()` - creates directories and saves TOML
 - Font size adjustable 8-32px
 - `renderer.set_font()` recreates atlas when font changes
 
-### Color Schemes
+### Color Schemes & ANSI Color Support
 - `ColorScheme` struct: 16 ANSI colors + foreground/background
 - Presets: Amber, Green, White (monochrome), ANSI (full color)
 - Monochrome schemes map all 16 colors to intensity variants of one hue
 - Color selector in Appearance tab with live preview
-- Terminal text uses `color_scheme.foreground`, dim uses 60% intensity
+- Full ANSI color support via `ansi_color_to_rgba()` in main.rs:
+  - Reads `cell.fg` and `cell.bg` from alacritty_terminal cells
+  - Maps NamedColor to scheme colors, handles dim variants
+  - 256-color via `indexed_color()`: 0-15 scheme, 16-231 color cube, 232-255 grayscale
+  - True color (24-bit RGB) passed through directly
+  - Inverse video swaps fg/bg
+- Text selection uses inverted colors from the active color scheme
 
 ### Key Files Modified
 - `crates/crt-renderer/src/line_pipeline.rs` - NEW: line rendering
@@ -373,41 +353,39 @@ Config saving: `config.save_to_default()` - creates directories and saves TOML
 - `shaders/line.wgsl` - NEW: solid color lines
 
 ### Remaining Work
-- Wire burn_in config to burnin_pipeline
 - Investigate remaining moiré in curved scanline areas (may need fwidth() AA)
-- Consider content-aware scanline darkening (like cool-retro-term)
-- Scrollback buffer and scroll support (mouse wheel, Shift+PageUp/PageDown)
 - BDF bitmap font support (skip rasterizer, write directly to atlas)
 
-### Next Steps: Full ANSI Color Support
-Currently we use `color_scheme.foreground` for all text. To support actual terminal colors:
+### Future: Authentic Scanlines with BDF Fonts
 
-1. **Read ANSI colors from terminal cells**
-   - `alacritty_terminal::term::Cell` has `fg` and `bg` color fields
-   - These contain `Color::Named(NamedColor)` for ANSI 0-15, or RGB values
-   - Map `NamedColor::Black` → `color_scheme.colors[0]`, etc.
+The current scanline implementation uses one "virtual scanline" per text row - this is a
+compromise that works with TTF fonts but isn't physically accurate to real CRTs.
 
-2. **Handle SGR escape sequences**
-   - Already parsed by alacritty_terminal
-   - SGR 30-37: foreground colors 0-7
-   - SGR 40-47: background colors 0-7
-   - SGR 90-97: bright foreground 8-15
-   - SGR 100-107: bright background 8-15
-   - SGR 38;5;N: 256-color mode
-   - SGR 38;2;R;G;B: true color mode
+**The problem with TTF + scanlines:**
+- TTF fonts use anti-aliasing and sub-pixel positioning
+- Horizontal strokes land at arbitrary pixel positions
+- Traditional scanlines (every N pixels) cut through characters unpredictably
+- This destroys readability, especially for thin strokes
 
-3. **Update cell rendering in main.rs**
-   ```rust
-   let fg = match cell.fg {
-       Color::Named(n) => color_scheme.colors[n as usize],
-       Color::Spec(rgb) => [rgb.r/255.0, rgb.g/255.0, rgb.b/255.0, 1.0],
-       Color::Indexed(i) => color_scheme.colors[i as usize], // for 0-15
-   };
-   ```
+**How real CRT terminals worked:**
+- Bitmap fonts with fixed pixel structure (each pixel on or off)
+- Character cells were N scanlines tall (e.g., 16 scanlines for a 16px cell)
+- Font designers placed horizontal strokes to align WITH bright scanlines
+- Dark bands fell in the natural gaps between text rows and within character whitespace
 
-4. **256-color and true color**
-   - 256-color: 0-15 use scheme, 16-231 are a color cube, 232-255 are grays
-   - True color: pass RGB directly (may want to tint for CRT effect)
+**Plan for BDF font support:**
+1. Load BDF fonts directly to atlas (no rasterization, preserve exact pixel structure)
+2. Add `scanlines_per_cell` config (e.g., cell_height or cell_height/2)
+3. Calculate total scanlines as: `num_rows * scanlines_per_cell`
+4. Align phase so bright bands hit middle of cell (where character body is)
+5. Optionally: analyze font to find common stroke rows and optimize alignment
+
+**Result:** When resizing the window, you get more/fewer text rows, but each character
+maintains the same scanline relationship. The phosphor pitch is effectively fixed,
+just like real CRT hardware.
+
+For TTF fonts, keep the current row-aligned approximation (or offer reduced-intensity
+pixel-based scanlines as an option).
 
 ## Technical Notes
 
@@ -434,13 +412,16 @@ if is_wide_spacer {
 }
 ```
 
-### CRT Effect Pipeline (planned)
+### CRT Effect Pipeline
 
 ```
-Terminal Grid → Text Texture → CRT Shader → Screen
-                                   ↓
-                            - Barrel distortion
-                            - Scanlines
-                            - Bloom/glow
-                            - Color tint
+Terminal Grid → Text Texture → Burn-in → CRT Shader → Screen
+                                   ↓           ↓
+                            Ping-pong    - Barrel distortion
+                            buffers      - Scanlines (triangle wave)
+                                         - Bloom/glow
+                                         - Static noise
+                                         - Flicker
+                                         - Vignette
+                                         - Focus glow (per-pane mode)
 ```

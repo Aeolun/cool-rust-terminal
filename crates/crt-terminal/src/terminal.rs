@@ -3,13 +3,16 @@
 
 use alacritty_terminal::event::{Event, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::tty;
 use alacritty_terminal::Grid;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+/// Default scrollback history size (number of lines)
+const SCROLLBACK_LINES: usize = 10_000;
 
 /// Terminal instance with PTY and terminal state
 pub struct Terminal {
@@ -89,7 +92,10 @@ impl Terminal {
         };
 
         let term_size = TermSize::new(columns as usize, rows as usize);
-        let term_config = alacritty_terminal::term::Config::default();
+        let term_config = alacritty_terminal::term::Config {
+            scrolling_history: SCROLLBACK_LINES,
+            ..Default::default()
+        };
         let term = Term::new(term_config, &term_size, event_proxy.clone());
         let term = Arc::new(FairMutex::new(term));
 
@@ -161,5 +167,41 @@ impl Terminal {
         let term = self.term.lock();
         let cursor = term.grid().cursor.point;
         (cursor.column.0, cursor.line.0 as usize)
+    }
+
+    /// Scroll the display by a number of lines (negative = up, positive = down)
+    pub fn scroll(&self, delta: i32) {
+        let mut term = self.term.lock();
+        term.scroll_display(Scroll::Delta(delta));
+    }
+
+    /// Scroll up by one page
+    pub fn scroll_page_up(&self) {
+        let mut term = self.term.lock();
+        term.scroll_display(Scroll::PageUp);
+    }
+
+    /// Scroll down by one page
+    pub fn scroll_page_down(&self) {
+        let mut term = self.term.lock();
+        term.scroll_display(Scroll::PageDown);
+    }
+
+    /// Scroll to the bottom (most recent output)
+    pub fn scroll_to_bottom(&self) {
+        let mut term = self.term.lock();
+        term.scroll_display(Scroll::Bottom);
+    }
+
+    /// Get current scroll position (0 = at bottom, positive = scrolled up)
+    pub fn display_offset(&self) -> usize {
+        let term = self.term.lock();
+        term.grid().display_offset()
+    }
+
+    /// Get total scrollback history size (number of lines above visible area)
+    pub fn history_size(&self) -> usize {
+        let term = self.term.lock();
+        term.grid().history_size()
     }
 }

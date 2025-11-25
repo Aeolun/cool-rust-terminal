@@ -39,6 +39,7 @@ pub struct EffectParams {
     pub curvature: f32,
     pub scanline_intensity: f32,
     pub bloom: f32,
+    pub burn_in: f32,
     pub focus_glow_radius: f32,
     pub focus_glow_width: f32,
     pub focus_glow_intensity: f32,
@@ -290,6 +291,7 @@ impl Renderer {
             .prepare(&self.gpu.queue, &mut self.atlas, &chars);
 
         // Update CRT uniforms (whole-screen mode for simple grid render)
+        let (_, cell_height) = self.atlas.cell_size();
         self.crt_pipeline.update(
             &self.gpu.queue,
             width as f32,
@@ -298,6 +300,7 @@ impl Renderer {
             false, // whole-screen mode
             &[(0.0, 0.0, 1.0, 1.0)], // single full-screen pane
             -1, // no focused pane
+            cell_height,
             0.03, // default curvature
             0.3,  // default scanlines
             0.3,  // default bloom
@@ -513,6 +516,7 @@ impl Renderer {
         self.line_pipeline.prepare(&self.gpu.queue, &all_lines);
 
         // Update CRT uniforms
+        let (_, cell_height) = self.atlas.cell_size();
         self.crt_pipeline.update(
             &self.gpu.queue,
             width as f32,
@@ -521,6 +525,7 @@ impl Renderer {
             per_pane_crt,
             pane_rects_normalized,
             focused_pane_index,
+            cell_height,
             effects.curvature,
             effects.scanline_intensity,
             effects.bloom,
@@ -538,7 +543,9 @@ impl Renderer {
         );
 
         // Update burn-in uniforms
-        self.burnin_pipeline.update(&self.gpu.queue, 0.92, 1.0);
+        // Map burn_in (0-1 persistence strength) to decay rate (0 = no persistence, 0.95 = max)
+        let decay = effects.burn_in * 0.95;
+        self.burnin_pipeline.update(&self.gpu.queue, decay, 1.0);
 
         // Prepare burn-in bind groups (needs current frame texture)
         self.burnin_pipeline.prepare_bind_groups(&self.gpu.device, &self.offscreen_view);

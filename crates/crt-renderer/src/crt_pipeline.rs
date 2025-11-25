@@ -50,8 +50,9 @@ struct CrtUniforms {
     // Content scale - adjusts how big the content is drawn (like H-SIZE/V-SIZE knobs)
     content_scale_x: f32,
     content_scale_y: f32,
+    // Cell height for scanline alignment (one scanline per text row)
+    cell_height: f32,
     _pad1: f32,  // Padding for vec4 alignment
-    _pad2: f32,
     // Focus glow color (follows font color) - uses vec4 for alignment (w ignored)
     glow_color: [f32; 4],
     // Pane rects (max 16 panes)
@@ -145,8 +146,8 @@ impl CrtPipeline {
                 bezel_border_left: 52.0,
                 content_scale_x: 1.0,
                 content_scale_y: 1.0,
+                cell_height: 18.0,  // Default font size
                 _pad1: 0.0,
-                _pad2: 0.0,
                 glow_color: [1.0, 0.7, 0.0, 1.0],  // Default amber
                 panes: [PaneRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }; MAX_PANES],
             }]),
@@ -289,6 +290,7 @@ impl CrtPipeline {
     /// Update CRT uniforms
     /// pane_rects: slice of (x, y, width, height) in normalized coordinates (0-1)
     /// focused_pane: index of the focused pane (-1 if none/single pane)
+    /// cell_height: height of a text cell in pixels (for scanline alignment)
     /// effect settings from config
     #[allow(clippy::too_many_arguments)]
     pub fn update(
@@ -300,6 +302,7 @@ impl CrtPipeline {
         per_pane_mode: bool,
         pane_rects: &[(f32, f32, f32, f32)],
         focused_pane: i32,
+        cell_height: f32,
         curvature: f32,
         scanline_intensity: f32,
         bloom_intensity: f32,
@@ -352,8 +355,8 @@ impl CrtPipeline {
                 bezel_border_left: 52.0,
                 content_scale_x,
                 content_scale_y,
+                cell_height,
                 _pad1: 0.0,
-                _pad2: 0.0,
                 glow_color,
                 panes,
             }]),
