@@ -1,6 +1,7 @@
 // ABOUTME: Main application entry point.
 // ABOUTME: Sets up window, event loop, and coordinates terminal/rendering.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -12,6 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{RenderCell, Renderer};
 use crt_terminal::Terminal;
 
@@ -41,8 +43,14 @@ impl Selection {
             (self.end.row, self.start.row, self.end.col, self.start.col)
         };
         (
-            CellPos { col: start_col, row: start_row },
-            CellPos { col: end_col, row: end_row },
+            CellPos {
+                col: start_col,
+                row: start_row,
+            },
+            CellPos {
+                col: end_col,
+                row: end_row,
+            },
         )
     }
 
@@ -69,7 +77,8 @@ impl Selection {
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    terminal: Option<Terminal>,
+    layout: LayoutTree,
+    terminals: HashMap<PaneId, Terminal>,
     modifiers: ModifiersState,
     selection: Selection,
     mouse_pos: (f64, f64),
@@ -82,7 +91,8 @@ impl App {
         Self {
             window: None,
             renderer: None,
-            terminal: None,
+            layout: LayoutTree::new(),
+            terminals: HashMap::new(),
             modifiers: ModifiersState::empty(),
             selection: Selection::default(),
             mouse_pos: (0.0, 0.0),
@@ -149,111 +159,194 @@ impl App {
         }
     }
 
-    fn render_terminal(&mut self) {
+    fn create_terminal_for_pane(&mut self, pane_id: PaneId) {
+        let Some(renderer) = &self.renderer else {
+            return;
+        };
+
+        let (win_width, win_height) = renderer.window_size();
+        let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
+
+        if let Some(rect) = rects.get(&pane_id) {
+            let pane_width = (rect.width * win_width as f32) as u32;
+            let pane_height = (rect.height * win_height as f32) as u32;
+            let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
+
+            match Terminal::new(cols, rows) {
+                Ok(terminal) => {
+                    self.terminals.insert(pane_id, terminal);
+                    tracing::info!(
+                        "Created terminal for pane {:?} ({}x{} cells)",
+                        pane_id,
+                        cols,
+                        rows
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create terminal: {}", e);
+                }
+            }
+        }
+    }
+
+    fn resize_terminals(&mut self) {
+        let Some(renderer) = &self.renderer else {
+            return;
+        };
+
+        let (win_width, win_height) = renderer.window_size();
+        let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
+
+        for (pane_id, terminal) in &self.terminals {
+            if let Some(rect) = rects.get(pane_id) {
+                let pane_width = (rect.width * win_width as f32) as u32;
+                let pane_height = (rect.height * win_height as f32) as u32;
+                let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
+                terminal.resize(cols, rows);
+            }
+        }
+    }
+
+    fn render_terminals(&mut self) {
         let Some(renderer) = &mut self.renderer else {
             return;
         };
-        let Some(terminal) = &self.terminal else {
-            if let Err(e) = renderer.render() {
-                tracing::error!("Render error: {}", e);
-            }
-            return;
-        };
 
-        // Get cursor position first
-        let (cursor_col, cursor_line) = terminal.cursor_position();
+        let (win_width, win_height) = renderer.window_size();
+        let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
+        let focused_pane = self.layout.focused_pane();
 
-        // Read terminal grid and convert to render cells
-        let (_cols, _rows_count) = renderer.grid_size();
-        let selection = &self.selection;
-        let (cells, grid_chars) = terminal.with_grid(|grid| {
-            use alacritty_terminal::grid::Dimensions;
-            use alacritty_terminal::index::{Column, Line};
-            use alacritty_terminal::term::cell::Flags;
+        let mut pane_renders: Vec<(f32, f32, Vec<Vec<RenderCell>>)> = Vec::new();
 
-            let grid_cols = grid.columns();
-            let grid_lines = grid.screen_lines();
+        for pane_id in self.layout.panes() {
+            let Some(rect) = rects.get(pane_id) else {
+                continue;
+            };
+            let Some(terminal) = self.terminals.get(pane_id) else {
+                continue;
+            };
 
-            let mut rows: Vec<Vec<RenderCell>> = Vec::with_capacity(grid_lines);
-            let mut grid_chars: Vec<Vec<char>> = Vec::with_capacity(grid_lines);
+            let x_offset = rect.x * win_width as f32;
+            let y_offset = rect.y * win_height as f32;
 
-            for line_idx in 0..grid_lines {
-                let mut row = Vec::with_capacity(grid_cols);
-                let mut row_chars = Vec::with_capacity(grid_cols);
-                let line = Line(line_idx as i32);
-                let mut in_non_ascii_run = false;
+            // Only show cursor in focused pane
+            let is_focused = *pane_id == focused_pane;
 
-                for col_idx in 0..grid_cols {
-                    let cell = &grid[line][Column(col_idx)];
-                    let mut c = cell.c;
-                    let flags = cell.flags;
+            let (cursor_col, cursor_line) = terminal.cursor_position();
+            let selection = &self.selection;
 
-                    // Collapse runs of non-ASCII (and wide char spacers) into single '?'
-                    let is_wide_spacer = flags.contains(Flags::WIDE_CHAR_SPACER);
-                    let is_non_ascii = !c.is_ascii() || (c.is_control() && c != ' ' && c != '\0');
+            let cells = terminal.with_grid(|grid| {
+                use alacritty_terminal::grid::Dimensions;
+                use alacritty_terminal::index::{Column, Line};
+                use alacritty_terminal::term::cell::Flags;
 
-                    if is_wide_spacer {
-                        // Second half of wide char - skip entirely
-                        continue;
-                    } else if is_non_ascii {
-                        if in_non_ascii_run {
-                            // Skip consecutive non-ASCII chars
+                let grid_cols = grid.columns();
+                let grid_lines = grid.screen_lines();
+
+                let mut rows: Vec<Vec<RenderCell>> = Vec::with_capacity(grid_lines);
+
+                for line_idx in 0..grid_lines {
+                    let mut row = Vec::with_capacity(grid_cols);
+                    let line = Line(line_idx as i32);
+                    let mut in_non_ascii_run = false;
+
+                    for col_idx in 0..grid_cols {
+                        let cell = &grid[line][Column(col_idx)];
+                        let mut c = cell.c;
+                        let flags = cell.flags;
+
+                        // Collapse runs of non-ASCII (and wide char spacers) into single '?'
+                        let is_wide_spacer = flags.contains(Flags::WIDE_CHAR_SPACER);
+                        let is_non_ascii = !c.is_ascii() || (c.is_control() && c != ' ' && c != '\0');
+
+                        if is_wide_spacer {
                             continue;
+                        } else if is_non_ascii {
+                            if in_non_ascii_run {
+                                continue;
+                            } else {
+                                c = '?';
+                                in_non_ascii_run = true;
+                            }
                         } else {
-                            c = '?';
-                            in_non_ascii_run = true;
+                            in_non_ascii_run = false;
                         }
-                    } else {
-                        in_non_ascii_run = false;
+
+                        let is_cursor = is_focused && line_idx == cursor_line && col_idx == cursor_col;
+                        let is_selected = is_focused && selection.contains(col_idx, line_idx);
+
+                        let fg = if is_cursor {
+                            [0.0, 0.0, 0.0, 1.0]
+                        } else if is_selected {
+                            SELECTION_FG
+                        } else if cell.flags.contains(Flags::DIM) {
+                            [0.6, 0.42, 0.0, 1.0]
+                        } else {
+                            AMBER
+                        };
+
+                        let bg = if is_cursor {
+                            AMBER
+                        } else {
+                            [0.0, 0.0, 0.0, 0.0]
+                        };
+
+                        if is_cursor && (c == ' ' || c == '\0') {
+                            c = '█';
+                        }
+
+                        // For cursor block on empty cell, use amber foreground
+                        let final_fg = if is_cursor && c == '█' { AMBER } else { fg };
+
+                        row.push(RenderCell {
+                            c,
+                            fg: final_fg,
+                            bg,
+                        });
                     }
 
-                    let is_cursor = line_idx == cursor_line && col_idx == cursor_col;
-                    let is_selected = selection.contains(col_idx, line_idx);
-
-                    let fg = if is_cursor {
-                        [0.0, 0.0, 0.0, 1.0]
-                    } else if is_selected {
-                        SELECTION_FG
-                    } else if cell.flags.contains(Flags::DIM) {
-                        [0.6, 0.42, 0.0, 1.0]
-                    } else {
-                        AMBER
-                    };
-
-                    let bg = if is_cursor {
-                        AMBER
-                    } else {
-                        [0.0, 0.0, 0.0, 0.0]
-                    };
-
-                    if is_cursor && (c == ' ' || c == '\0') {
-                        c = '█';
-                    }
-
-                    // For cursor block on empty cell, use amber foreground
-                    let final_fg = if is_cursor && c == '█' {
-                        AMBER
-                    } else {
-                        fg
-                    };
-
-                    row_chars.push(c);
-                    row.push(RenderCell { c, fg: final_fg, bg });
+                    rows.push(row);
                 }
 
-                rows.push(row);
-                grid_chars.push(row_chars);
-            }
+                rows
+            });
 
-            (rows, grid_chars)
-        });
+            pane_renders.push((x_offset, y_offset, cells));
+        }
 
-        // Store grid for copy
-        self.last_grid = grid_chars;
+        // Convert to the format render_panes expects
+        let panes: Vec<(f32, f32, &[Vec<RenderCell>])> = pane_renders
+            .iter()
+            .map(|(x, y, cells)| (*x, *y, cells.as_slice()))
+            .collect();
 
-        if let Err(e) = renderer.render_grid(&cells) {
+        if let Err(e) = renderer.render_panes(&panes) {
             tracing::error!("Render error: {}", e);
         }
+    }
+
+    fn add_pane(&mut self) {
+        let new_pane_id = self.layout.add_pane();
+        self.resize_terminals(); // Existing terminals need to shrink
+        self.create_terminal_for_pane(new_pane_id);
+        tracing::info!("Added pane {:?}, total panes: {}", new_pane_id, self.layout.panes().len());
+    }
+
+    fn close_pane(&mut self, pane_id: PaneId) {
+        self.terminals.remove(&pane_id);
+        self.layout.close(pane_id);
+        self.resize_terminals(); // Remaining terminals expand
+        tracing::info!("Closed pane {:?}, remaining panes: {}", pane_id, self.layout.panes().len());
+    }
+
+    fn check_exited_terminals(&mut self) -> Vec<PaneId> {
+        let mut exited = Vec::new();
+        for (pane_id, terminal) in &self.terminals {
+            if terminal.has_exited() {
+                exited.push(*pane_id);
+            }
+        }
+        exited
     }
 }
 
@@ -277,16 +370,14 @@ impl ApplicationHandler for App {
         let renderer = pollster::block_on(Renderer::new(Arc::clone(&window)))
             .expect("Failed to create renderer");
 
-        // Calculate terminal size based on cell dimensions
-        let (cols, rows) = renderer.grid_size();
-
-        // Create terminal
-        let terminal = Terminal::new(cols, rows).expect("Failed to create terminal");
-
         self.window = Some(window);
         self.renderer = Some(renderer);
-        self.terminal = Some(terminal);
 
+        // Create terminal for the initial pane
+        let initial_pane = self.layout.focused_pane();
+        self.create_terminal_for_pane(initial_pane);
+
+        let (cols, rows) = self.renderer.as_ref().unwrap().grid_size();
         tracing::info!(
             "Window and renderer initialized ({}x{} cells)",
             cols,
@@ -308,25 +399,25 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(new_size) => {
                 if let Some(renderer) = &mut self.renderer {
                     renderer.resize(new_size.width, new_size.height);
-
-                    // Resize terminal to match
-                    let (cols, rows) = renderer.grid_size();
-                    if let Some(terminal) = &self.terminal {
-                        terminal.resize(cols, rows);
-                    }
+                    self.resize_terminals();
                 }
             }
             WindowEvent::RedrawRequested => {
-                // Check if terminal has exited
-                if let Some(terminal) = &self.terminal {
-                    if terminal.has_exited() {
-                        tracing::info!("Shell exited, closing window");
-                        event_loop.exit();
-                        return;
-                    }
+                // Check for exited terminals and close their panes
+                let exited = self.check_exited_terminals();
+                for pane_id in exited {
+                    tracing::info!("Shell in pane {:?} exited", pane_id);
+                    self.close_pane(pane_id);
                 }
 
-                self.render_terminal();
+                // Exit if no panes remain
+                if self.layout.panes().is_empty() {
+                    tracing::info!("All panes closed, exiting");
+                    event_loop.exit();
+                    return;
+                }
+
+                self.render_terminals();
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -359,8 +450,18 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
-                    if let Some(terminal) = &self.terminal {
-                        let ctrl = self.modifiers.control_key();
+                    let ctrl = self.modifiers.control_key();
+                    let shift = self.modifiers.shift_key();
+
+                    // Shift+Ctrl+Enter: Add new pane
+                    if ctrl && shift && event.logical_key == Key::Named(NamedKey::Enter) {
+                        self.add_pane();
+                        return;
+                    }
+
+                    // Send input to focused terminal
+                    let focused = self.layout.focused_pane();
+                    if let Some(terminal) = self.terminals.get(&focused) {
                         let alt = self.modifiers.alt_key();
 
                         // Convert key to bytes and send to terminal

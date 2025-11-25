@@ -148,6 +148,19 @@ impl Renderer {
         (cols.max(1), rows.max(1))
     }
 
+    /// Calculate grid size for a region (in pixels)
+    pub fn grid_size_for_region(&self, width_px: u32, height_px: u32) -> (u16, u16) {
+        let (cell_w, cell_h) = self.atlas.cell_size();
+        let cols = (width_px as f32 / cell_w).floor() as u16;
+        let rows = (height_px as f32 / cell_h).floor() as u16;
+        (cols.max(1), rows.max(1))
+    }
+
+    /// Get window size in pixels
+    pub fn window_size(&self) -> (u32, u32) {
+        self.gpu.size
+    }
+
     /// Render a grid of cells with CRT post-processing
     pub fn render_grid(
         &mut self,
@@ -235,6 +248,106 @@ impl Renderer {
             });
 
             self.crt_pipeline.render(&mut render_pass, &self.crt_bind_group);
+        }
+
+        self.gpu.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        Ok(())
+    }
+
+    /// Render multiple panes, each with its pixel region and cells
+    /// Each pane is (x_offset, y_offset, cells)
+    pub fn render_panes(
+        &mut self,
+        panes: &[(f32, f32, &[Vec<RenderCell>])],
+    ) -> Result<(), RenderError> {
+        let (width, height) = self.gpu.size;
+        let (cell_w, cell_h) = self.atlas.cell_size();
+        let ascent = self.atlas.ascent();
+
+        // Calculate delta time for animations
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
+        let mut chars = Vec::new();
+
+        for &(x_offset, y_offset, cells) in panes {
+            for (row_idx, row) in cells.iter().enumerate() {
+                let baseline_y = y_offset + (row_idx as f32 * cell_h) + ascent;
+
+                for (col_idx, cell) in row.iter().enumerate() {
+                    if cell.c == ' ' || cell.c == '\0' {
+                        continue;
+                    }
+
+                    let x = x_offset + col_idx as f32 * cell_w;
+                    chars.push((cell.c, x, baseline_y, cell.fg));
+                }
+            }
+        }
+
+        self.text_pipeline
+            .update_screen_size(&self.gpu.queue, width as f32, height as f32);
+        self.text_pipeline
+            .prepare(&self.gpu.queue, &mut self.atlas, &chars);
+
+        // Update CRT uniforms
+        self.crt_pipeline
+            .update(&self.gpu.queue, width as f32, height as f32, dt);
+
+        let output = self.gpu.surface.get_current_texture()?;
+        let screen_view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
+
+        // Pass 1: Render text to off-screen texture
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Text Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.offscreen_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(self.clear_color),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.text_pipeline.render(&mut render_pass);
+        }
+
+        // Pass 2: Apply CRT effect to screen
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("CRT Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &screen_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.crt_pipeline
+                .render(&mut render_pass, &self.crt_bind_group);
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
