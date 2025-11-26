@@ -1,67 +1,318 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <defs>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 512 512"
+   version="1.1"
+   id="svg21"
+   sodipodi:docname="icon.svg"
+   inkscape:version="1.4 (e7c3feb100, 2024-10-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview21"
+     pagecolor="#ffffff"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1.5730364"
+     inkscape:cx="86.774853"
+     inkscape:cy="220.27463"
+     inkscape:window-width="3440"
+     inkscape:window-height="1368"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg21" />
+  <defs
+     id="defs7">
     <!-- CRT screen glow -->
-    <radialGradient id="screenGlow" cx="50%" cy="50%" r="60%">
-      <stop offset="0%" stop-color="#1a1206"/>
-      <stop offset="100%" stop-color="#0a0804"/>
+    <radialGradient
+       id="screenGlow"
+       cx="50%"
+       cy="50%"
+       r="60%">
+      <stop
+         offset="0%"
+         stop-color="#1a1206"
+         id="stop1" />
+      <stop
+         offset="100%"
+         stop-color="#0a0804"
+         id="stop2" />
     </radialGradient>
-
     <!-- Amber phosphor glow -->
-    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
-      <feGaussianBlur stdDeviation="6" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
+    <filter
+       id="glow"
+       x="-0.9"
+       y="-0.9"
+       width="2.8"
+       height="2.8">
+      <feGaussianBlur
+         stdDeviation="6"
+         result="blur"
+         id="feGaussianBlur2" />
+      <feMerge
+         id="feMerge3">
+        <feMergeNode
+           in="blur"
+           id="feMergeNode2" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3" />
       </feMerge>
     </filter>
-
+    <!-- Stronger glow for small elements like Ferris -->
+    <filter
+       id="glowStrong"
+       x="-1.5"
+       y="-1.5"
+       width="4"
+       height="4">
+      <feGaussianBlur
+         stdDeviation="25"
+         result="blur"
+         id="feGaussianBlur2b" />
+      <feMerge
+         id="feMerge3b">
+        <feMergeNode
+           in="blur"
+           id="feMergeNode2b" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode3b" />
+      </feMerge>
+    </filter>
     <!-- Outer glow for the whole monitor -->
-    <filter id="outerGlow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="8" result="blur"/>
-      <feComposite in="blur" in2="SourceGraphic" operator="out"/>
-      <feFlood flood-color="#ff9500" flood-opacity="0.3"/>
-      <feComposite in2="blur" operator="in"/>
-      <feMerge>
-        <feMergeNode/>
-        <feMergeNode in="SourceGraphic"/>
+    <filter
+       id="outerGlow"
+       x="-0.049074074"
+       y="-0.054081633"
+       width="1.0981481"
+       height="1.1081633">
+      <feGaussianBlur
+         stdDeviation="8"
+         result="blur"
+         id="feGaussianBlur3" />
+      <feComposite
+         in="blur"
+         in2="SourceGraphic"
+         operator="out"
+         id="feComposite3" />
+      <feFlood
+         flood-color="#ff9500"
+         flood-opacity="0.3"
+         id="feFlood3" />
+      <feComposite
+         in2="blur"
+         operator="in"
+         id="feComposite4" />
+      <feMerge
+         id="feMerge5">
+        <feMergeNode
+           id="feMergeNode4" />
+        <feMergeNode
+           in="SourceGraphic"
+           id="feMergeNode5" />
       </feMerge>
     </filter>
-
     <!-- Scanline pattern -->
-    <pattern id="scanlines" patternUnits="userSpaceOnUse" width="4" height="4">
-      <rect width="4" height="2" fill="rgba(0,0,0,0.15)"/>
+    <pattern
+       id="scanlines"
+       patternUnits="userSpaceOnUse"
+       width="4"
+       height="4">
+      <rect
+         width="4"
+         height="2"
+         fill="rgba(0,0,0,0.15)"
+         id="rect5" />
     </pattern>
-
     <!-- Screen curvature highlight -->
-    <linearGradient id="screenHighlight" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="rgba(255,200,100,0.1)"/>
-      <stop offset="50%" stop-color="rgba(255,200,100,0)"/>
-      <stop offset="100%" stop-color="rgba(0,0,0,0.2)"/>
+    <linearGradient
+       id="screenHighlight"
+       x1="0%"
+       y1="0%"
+       x2="100%"
+       y2="100%">
+      <stop
+         offset="0%"
+         stop-color="rgba(255,200,100,0.1)"
+         id="stop5" />
+      <stop
+         offset="50%"
+         stop-color="rgba(255,200,100,0)"
+         id="stop6" />
+      <stop
+         offset="100%"
+         stop-color="rgba(0,0,0,0.2)"
+         id="stop7" />
     </linearGradient>
   </defs>
-
   <!-- Monitor body/bezel -->
-  <rect x="40" y="60" width="432" height="392" rx="24" ry="24"
-        fill="#2a2520" stroke="#3d3530" stroke-width="4" filter="url(#outerGlow)"/>
-
+  <rect
+     x="40"
+     y="60"
+     width="432"
+     height="392"
+     rx="24"
+     ry="24"
+     fill="#2a2520"
+     stroke="#3d3530"
+     stroke-width="4"
+     filter="url(#outerGlow)"
+     id="rect7" />
   <!-- Inner bezel -->
-  <rect x="56" y="76" width="400" height="360" rx="16" ry="16" fill="#1a1510"/>
-
+  <rect
+     x="56"
+     y="76"
+     width="400"
+     height="360"
+     rx="16"
+     ry="16"
+     fill="#1a1510"
+     id="rect8" />
   <!-- CRT screen (curved appearance via gradient) -->
-  <rect x="72" y="92" width="368" height="328" rx="12" ry="12" fill="url(#screenGlow)"/>
-
+  <rect
+     x="72"
+     y="92"
+     width="368"
+     height="328"
+     rx="12"
+     ry="12"
+     fill="url(#screenGlow)"
+     id="rect9" />
   <!-- Screen curvature highlight -->
-  <rect x="72" y="92" width="368" height="328" rx="12" ry="12" fill="url(#screenHighlight)"/>
-
+  <rect
+     x="72"
+     y="92"
+     width="368"
+     height="328"
+     rx="12"
+     ry="12"
+     fill="url(#screenHighlight)"
+     id="rect10" />
   <!-- Scanlines overlay -->
-  <rect x="72" y="92" width="368" height="328" rx="12" ry="12" fill="url(#scanlines)"/>
-
+  <rect
+     x="72"
+     y="92"
+     width="368"
+     height="328"
+     rx="12"
+     ry="12"
+     fill="url(#scanlines)"
+     id="rect11" />
   <!-- Simple $_ prompt - large and readable at any size -->
-  <g filter="url(#glow)">
-    <text x="100" y="300" font-family="monospace" font-size="180" font-weight="bold"
-          fill="#ff9500">$_</text>
+  <g
+     filter="url(#glow)"
+     id="g11"
+     transform="translate(-2.6971027,15.283582)">
+    <text
+       x="100"
+       y="280"
+       font-family="monospace"
+       font-size="160px"
+       font-weight="bold"
+       fill="#ff9500"
+       id="text11">$_</text>
   </g>
-
+  <!-- Ferris the crab - amber colored, bottom right corner -->
+  <g
+     transform="matrix(0.17607878,0,0,0.21115576,195.52456,160.57027)"
+     filter="url(#glowStrong)"
+     id="g21">
+    <!-- Claws (back layer) -->
+    <g
+       transform="translate(1009.4,506.362)"
+       id="g12"
+       style="fill:#fe9400;fill-opacity:1">
+      <path
+         d="m 0,-7.203 -12.072,-25.006 c 0.063,-0.947 0.111,-1.898 0.111,-2.853 0,-28.346 -29.478,-54.471 -79.069,-75.389 v 17.393 c -4.836,-1.919 -9.871,-3.787 -15.117,-5.593 v -8.108 c -70.874,-25.56 -176.383,-41.778 -294.241,-41.778 -102.973,0 -196.529,12.38 -265.791,32.554 v 28.246 h -0.002 v -34.188 c -70.96,22.55 -114.954,53.877 -114.954,88.515 0,5.46 1.101,10.838 3.217,16.113 l -7.228,12.867 c 0,0 -5.792,7.512 4.406,23.362 8.994,13.977 54.048,68.685 77.827,97.335 10.214,14.687 17.141,23.734 17.746,22.859 0.955,-1.386 -6.351,-28.961 -26.635,-60.423 -9.466,-16.895 -20.768,-39.283 -27.554,-55.819 18.942,11.99 130.23,68.029 357.232,67.801 231.994,-0.232 335.115,-72.851 346.433,-82.737 -3.955,15.889 -17.468,48.033 -28.245,70.638 -17.706,32.331 -24.12,60.478 -23.296,61.87 0.524,0.878 6.565,-8.441 15.476,-23.543 C -51.025,87.37 -11.739,30.974 -3.889,16.608 5.007,0.323 0,-7.203 0,-7.203"
+         style="fill:#fe9400;fill-rule:nonzero;fill-opacity:1"
+         id="path11" />
+    </g>
+    <!-- Main body -->
+    <g
+       transform="translate(1079.49,294.885)"
+       id="g13">
+      <path
+         d="m 0,204.135 -79.343,-58.446 c -0.745,-2.6 -1.49,-5.201 -2.26,-7.781 l 26.062,-37.754 c 2.66,-3.84 3.196,-8.832 1.469,-13.211 -1.731,-4.358 -5.515,-7.482 -9.99,-8.247 l -44.066,-7.479 c -1.709,-3.485 -3.498,-6.916 -5.294,-10.319 L -94.907,18.51 c 1.903,-4.317 1.505,-9.335 -1.022,-13.254 -2.517,-3.937 -6.786,-6.237 -11.338,-6.058 l -44.724,1.625 c -2.315,-3.016 -4.667,-6.003 -7.067,-8.937 l 10.278,-45.432 c 1.042,-4.612 -0.274,-9.443 -3.487,-12.794 -3.195,-3.339 -7.838,-4.722 -12.253,-3.639 l -43.562,10.709 c -2.82,-2.493 -5.688,-4.953 -8.588,-7.365 l 1.567,-46.641 c 0.168,-4.721 -2.033,-9.208 -5.812,-11.829 -3.777,-2.636 -8.57,-3.032 -12.701,-1.074 l -40.638,19.321 c -3.273,-1.878 -6.565,-3.737 -9.892,-5.537 l -7.181,-45.961 c -0.729,-4.656 -3.724,-8.612 -7.919,-10.418 -4.185,-1.817 -8.976,-1.228 -12.648,1.536 l -36.232,27.185 c -3.569,-1.185 -7.153,-2.32 -10.779,-3.407 l -15.617,-43.585 c -1.588,-4.443 -5.25,-7.706 -9.716,-8.624 -4.45,-0.909 -9.028,0.632 -12.114,4.08 l -30.499,34.119 c -3.685,-0.423 -7.377,-0.81 -11.076,-1.131 l -23.549,-39.676 c -2.384,-4.018 -6.597,-6.464 -11.139,-6.464 -4.529,0 -8.75,2.446 -11.118,6.464 l -23.555,39.676 c -3.701,0.321 -7.408,0.708 -11.088,1.131 l -30.499,-34.119 c -3.09,-3.448 -7.684,-4.989 -12.122,-4.08 -4.46,0.93 -8.128,4.181 -9.707,8.624 l -15.629,43.585 c -3.621,1.087 -7.205,2.23 -10.78,3.407 l -36.22,-27.185 c -3.683,-2.774 -8.478,-3.361 -12.668,-1.536 -4.181,1.806 -7.188,5.762 -7.913,10.418 l -7.186,45.961 c -3.322,1.8 -6.614,3.649 -9.895,5.537 l -40.634,-19.321 c -4.127,-1.966 -8.945,-1.562 -12.704,1.074 -3.773,2.621 -5.98,7.108 -5.81,11.829 l 1.562,46.641 c -2.894,2.412 -5.756,4.872 -8.591,7.365 l -43.554,-10.709 c -4.423,-1.074 -9.062,0.3 -12.265,3.639 -3.221,3.351 -4.526,8.182 -3.491,12.794 l 10.257,45.432 c -2.378,2.945 -4.733,5.921 -7.042,8.937 l -44.724,-1.625 c -4.513,-0.135 -8.821,2.121 -11.343,6.058 -2.527,3.919 -2.91,8.937 -1.029,13.254 l 18.528,42.388 c -1.799,3.403 -3.586,6.834 -5.309,10.319 l -44.063,7.479 c -4.479,0.754 -8.252,3.876 -9.994,8.247 -1.728,4.379 -1.167,9.371 1.474,13.211 l 26.066,37.754 c -0.201,0.667 -0.387,1.339 -0.587,2.008 l -73.696,78.285 c 0,0 -11.296,8.851 5.147,29.654 14.5,18.351 88.951,91.096 128.271,129.205 16.606,19.348 27.984,31.329 29.172,30.293 1.876,-1.645 -7.972,-36.847 -40.682,-78.149 -25.216,-37.056 -57.941,-94.049 -50.267,-100.618 0,0 8.729,-11.081 26.242,-19.057 0.641,0.512 -0.662,-0.507 0,0 0,0 369.595,170.491 712.429,2.884 39.164,-7.025 62.873,13.955 62.873,13.955 8.176,4.74 -12.996,63.344 -30.407,102.137 -23.679,44.05 -27.151,78.422 -25.144,79.614 1.268,0.757 9.883,-12.353 22.172,-33.217 C -67.814,332.649 -10.492,252.1 0,232.534 11.895,210.352 0,204.135 0,204.135"
+         style="fill:#ff9500;fill-rule:nonzero"
+         id="path12" />
+    </g>
+    <!-- Right antenna -->
+    <g
+       transform="translate(917.896,244.679)"
+       id="g14">
+      <path
+         d="m 0,232.466 c 0,0 53.179,-2.466 123.032,-73.462 l 9.898,-21.979 c 0,0 -108.417,-107.848 60.118,-182.291 0,0 -14.755,24.112 -10.426,117.272 0,0 50.815,-17.649 65.714,-99.94 0,0 74.12,97.724 -80.502,189.377 0,0 -72.54,116.289 -174.805,105.15 z"
+         style="fill:#ff9500;fill-rule:nonzero"
+         id="path13" />
+    </g>
+    <!-- Right eye socket -->
+    <g
+       transform="translate(676.997,488.361)"
+       id="g15">
+      <path
+         d="m 0,-78.192 c 0,0 36.935,-40.443 73.871,0 0,0 29.022,53.927 0,80.887 0,0 -47.487,37.748 -73.871,0 0,0 -31.658,-29.659 0,-80.887"
+         style="fill:#1a1206;fill-rule:nonzero"
+         id="path14" />
+    </g>
+    <!-- Right eye -->
+    <g
+       transform="translate(719.761,425.169)"
+       id="g16">
+      <path
+         d="m 0,0.004 c 0,15.746 -9.282,28.514 -20.732,28.514 -11.448,0 -20.73,-12.768 -20.73,-28.514 0,-15.75 9.282,-28.518 20.73,-28.518 C -9.282,-28.514 0,-15.746 0,0.004"
+         style="fill:#ff9500;fill-rule:nonzero"
+         id="path15" />
+    </g>
+    <!-- Left eye socket -->
+    <g
+       transform="translate(512.148,482.736)"
+       id="g17">
+      <path
+         d="m 0,-83.609 c 0,0 63.355,-28.052 80.648,34.562 0,0 18.114,72.98 -52.03,77.099 0,0 -89.444,-17.228 -28.618,-111.661"
+         style="fill:#1a1206;fill-rule:nonzero"
+         id="path16" />
+    </g>
+    <!-- Left eye -->
+    <g
+       transform="translate(543.968,426.204)"
+       id="g18">
+      <path
+         d="m 0,0.002 c 0,16.239 -9.572,29.409 -21.381,29.409 -11.804,0 -21.379,-13.17 -21.379,-29.409 0,-16.244 9.575,-29.411 21.379,-29.411 C -9.572,-29.409 0,-16.242 0,0.002"
+         style="fill:#ff9500;fill-rule:nonzero"
+         id="path17" />
+    </g>
+    <!-- Mouth -->
+    <g
+       transform="translate(593.317,576.574)"
+       id="g19">
+      <path
+         d="m 0,-40.271 80.796,-6.484 c 0,0 -2.738,13.006 -13.279,22.769 0,0 -27.79,30.47 -59.673,-2.533 0,0 -5.217,-5.629 -7.844,-13.752"
+         style="fill:#1a1206;fill-rule:nonzero"
+         id="path18" />
+    </g>
+    <!-- Left antenna -->
+    <g
+       transform="translate(269.796,270.778)"
+       id="g20">
+      <path
+         d="m 0,190.741 c -0.667,0 -1.321,0.049 -1.973,0.101 -26.234,-5.971 -99.973,-25.185 -119.464,-56.363 0,0 99.227,-112.872 -55.86,-185.019 l 18.057,124.878 c 0,0 -47.809,-31.949 -58.126,-101.346 0,0 -116.423,84.494 51.384,165.474 0,0 15.22,57.187 161.349,102.815 l 0.107,-0.435 c 1.471,0.272 2.977,0.435 4.526,0.435 13.808,0 25.003,-11.312 25.003,-25.271 0,-13.956 -11.195,-25.269 -25.003,-25.269"
+         style="fill:#ff9500;fill-rule:nonzero"
+         id="path19" />
+    </g>
+  </g>
   <!-- Power LED -->
-  <circle cx="420" cy="430" r="8" fill="#ff6600" filter="url(#glow)"/>
+  <circle
+     cx="420"
+     cy="430"
+     r="8"
+     fill="#ff6600"
+     filter="url(#glow)"
+     id="circle21" />
 </svg>
