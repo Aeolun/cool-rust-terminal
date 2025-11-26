@@ -86,6 +86,49 @@ fn barrel_distort(uv: vec2<f32>, curvature: f32) -> vec2<f32> {
     return distorted * 0.5 + 0.5;
 }
 
+// Catmull-Rom basis weights for bicubic interpolation
+fn catmull_rom_weights(t: f32) -> vec4<f32> {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return vec4<f32>(
+        -0.5 * t3 + t2 - 0.5 * t,           // w0
+        1.5 * t3 - 2.5 * t2 + 1.0,          // w1
+        -1.5 * t3 + 2.0 * t2 + 0.5 * t,     // w2
+        0.5 * t3 - 0.5 * t2                  // w3
+    );
+}
+
+// Bicubic texture sampling using Catmull-Rom interpolation
+// Sharper than bilinear, preserves edges better during distortion
+fn texture_bicubic(uv: vec2<f32>) -> vec3<f32> {
+    let tex_size = vec2<f32>(textureDimensions(input_texture));
+    let inv_tex_size = 1.0 / tex_size;
+
+    // Convert UV to texel coordinates
+    let texel_coord = uv * tex_size - 0.5;
+    let texel_floor = floor(texel_coord);
+    let frac = texel_coord - texel_floor;
+
+    // Get Catmull-Rom weights for x and y
+    let wx = catmull_rom_weights(frac.x);
+    let wy = catmull_rom_weights(frac.y);
+
+    // Sample 4x4 grid and apply weights
+    var color = vec3<f32>(0.0);
+    for (var j = 0; j < 4; j = j + 1) {
+        let weight_y = wy[j];
+        for (var i = 0; i < 4; i = i + 1) {
+            let weight_x = wx[i];
+            let offset = vec2<f32>(f32(i) - 1.0, f32(j) - 1.0);
+            let sample_uv = (texel_floor + offset + 0.5) * inv_tex_size;
+            let sample_color = textureSample(input_texture, input_sampler, sample_uv).rgb;
+            color = color + sample_color * weight_x * weight_y;
+        }
+    }
+
+    return color;
+}
+
 // Check if UV is outside [0,1] range (for vignette/border)
 fn is_outside(uv: vec2<f32>) -> bool {
     return uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;
@@ -204,7 +247,7 @@ fn apply_whole_screen_crt(uv: vec2<f32>) -> vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    var color = textureSample(input_texture, input_sampler, distorted_uv).rgb;
+    var color = texture_bicubic(distorted_uv);
 
     if (uniforms.bloom_intensity > 0.0) {
         let texel_size = 1.0 / uniforms.screen_size;
@@ -303,7 +346,7 @@ fn apply_per_pane_crt(uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
     // Convert back to global UV for sampling
     let sample_uv = local_to_global_uv(distorted_local, pane_idx);
 
-    var color = textureSample(input_texture, input_sampler, sample_uv).rgb;
+    var color = texture_bicubic(sample_uv);
 
     // Add edge glow for focused pane BEFORE CRT effects so it gets processed too
     color = color + edge_glow(distorted_local, is_focused);
@@ -493,9 +536,9 @@ fn apply_bezel_mode_crt(screen_uv: vec2<f32>) -> vec4<f32> {
     // The texture sampler uses ClampToEdge, so out-of-bounds samples get edge pixels
     let sample_uv = scale_for_sampling(distorted_uv);
 
-    // Sample the input texture - no bounds check here!
+    // Sample the input texture with bicubic filtering for sharper text
     // The screen shape is defined ONLY by the barrel distortion edge above
-    var color = textureSample(input_texture, input_sampler, sample_uv).rgb;
+    var color = texture_bicubic(sample_uv);
 
     // Bloom
     if (uniforms.bloom_intensity > 0.0) {
@@ -613,9 +656,9 @@ fn apply_pane_bezel_crt(screen_uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
     // Convert back to global UV for sampling the texture
     let sample_uv = local_to_global_uv(scaled_local, pane_idx);
 
-    // Sample the input texture - no bounds check!
+    // Sample the input texture with bicubic filtering for sharper text
     // The screen shape is defined ONLY by the barrel distortion edge above
-    var color = textureSample(input_texture, input_sampler, sample_uv).rgb;
+    var color = texture_bicubic(sample_uv);
 
     // Add edge glow for focused pane (uses FIXED distorted_local coordinates)
     color = color + edge_glow(distorted_local, is_focused);
