@@ -64,6 +64,7 @@ pub struct CrtPipeline {
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
     sampler: wgpu::Sampler,
+    #[allow(dead_code)] // Kept alive for bezel_view
     bezel_texture: wgpu::Texture,
     bezel_view: wgpu::TextureView,
     time: f32,

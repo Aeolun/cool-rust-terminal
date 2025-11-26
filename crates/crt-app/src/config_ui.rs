@@ -689,7 +689,7 @@ impl ConfigUI {
         (c, fg, bg)
     }
 
-    fn format_field_line(&self, field: ConfigField, width: usize, selected: bool) -> String {
+    fn format_field_line(&self, field: ConfigField, _width: usize, selected: bool) -> String {
         let label = field.label();
 
         if field.is_slider() {

@@ -140,7 +140,8 @@ impl Selection {
 }
 
 const RESIZE_INDICATOR_DURATION: Duration = Duration::from_millis(1000);
-const SCROLL_INDICATOR_DURATION: Duration = Duration::from_millis(1500);
+const SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(1500);
+const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
 
 struct App {
     window: Option<Arc<Window>>,
@@ -182,13 +183,69 @@ impl App {
         }
     }
 
+    /// Returns the currently active config - either the preview config if
+    /// the settings UI is open, or the saved config otherwise.
+    fn current_config(&self) -> &Config {
+        if self.config_ui.visible {
+            &self.config_ui.config
+        } else {
+            &self.config
+        }
+    }
+
+    /// Invert the barrel distortion applied by the CRT shader.
+    /// Given a screen position (distorted), returns the undistorted position.
+    fn invert_barrel_distortion(&self, x: f64, y: f64) -> (f64, f64) {
+        let Some(renderer) = &self.renderer else {
+            return (x, y);
+        };
+
+        let curvature = self.current_config().effects.screen_curvature as f64;
+        if curvature.abs() < 0.0001 {
+            return (x, y);
+        }
+
+        let (win_width, win_height) = renderer.window_size();
+
+        // Convert pixel coords to normalized UV (0-1)
+        let uv_x = x / win_width as f64;
+        let uv_y = y / win_height as f64;
+
+        // Convert to centered coords (-1 to 1)
+        let dist_x = uv_x * 2.0 - 1.0;
+        let dist_y = uv_y * 2.0 - 1.0;
+
+        // Iteratively solve for the undistorted position
+        // The forward transform is: distorted = centered * (1 + k * |centered|^2)
+        // We iterate: centered = distorted / (1 + k * |centered|^2)
+        let mut cx = dist_x;
+        let mut cy = dist_y;
+
+        for _ in 0..5 {
+            let r2 = cx * cx + cy * cy;
+            let scale = 1.0 + curvature * r2;
+            cx = dist_x / scale;
+            cy = dist_y / scale;
+        }
+
+        // Convert back to UV (0-1) then to pixel coords
+        let undist_uv_x = cx * 0.5 + 0.5;
+        let undist_uv_y = cy * 0.5 + 0.5;
+
+        (undist_uv_x * win_width as f64, undist_uv_y * win_height as f64)
+    }
+
     fn pixel_to_cell(&self, x: f64, y: f64) -> CellPos {
         let Some(renderer) = &self.renderer else {
             return CellPos::default();
         };
+
+        // Invert the barrel distortion to get the undistorted position
+        let (ux, uy) = self.invert_barrel_distortion(x, y);
+
         let (cell_w, cell_h) = renderer.cell_size();
-        let col = (x / cell_w as f64).floor() as usize;
-        let row = (y / cell_h as f64).floor() as usize;
+        let col = (ux / cell_w as f64).floor() as usize;
+        let row = (uy / cell_h as f64).floor() as usize;
         CellPos { col, row }
     }
 
@@ -302,15 +359,13 @@ impl App {
     }
 
     fn render_terminals(&mut self) {
+        // Fetch config values before mutable borrow of renderer
+        let current_cfg = self.current_config();
+        let color_scheme = current_cfg.color_scheme.clone();
+        let per_pane_crt = current_cfg.per_pane_crt;
+
         let Some(renderer) = &mut self.renderer else {
             return;
-        };
-
-        // Get colors from active config (or preview config if UI is visible)
-        let color_scheme = if self.config_ui.visible {
-            self.config_ui.config.color_scheme.clone()
-        } else {
-            self.config.color_scheme.clone()
         };
 
         let (win_width, win_height) = renderer.window_size();
@@ -344,12 +399,14 @@ impl App {
 
                 let grid_cols = grid.columns();
                 let grid_lines = grid.screen_lines();
+                let display_offset = grid.display_offset() as i32;
 
                 let mut rows: Vec<Vec<RenderCell>> = Vec::with_capacity(grid_lines);
 
                 for line_idx in 0..grid_lines {
                     let mut row = Vec::with_capacity(grid_cols);
-                    let line = Line(line_idx as i32);
+                    // When scrolled (display_offset > 0), access history with negative line indices
+                    let line = Line(line_idx as i32 - display_offset);
 
                     for col_idx in 0..grid_cols {
                         let cell = &grid[line][Column(col_idx)];
@@ -369,7 +426,13 @@ impl App {
                             continue;
                         }
 
-                        let is_cursor = is_focused && line_idx == cursor_line && col_idx == cursor_col;
+                        // Cursor is at grid Line(cursor_line). We're displaying Line(line_idx - display_offset).
+                        // So cursor appears when line_idx - display_offset == cursor_line, i.e., line_idx == cursor_line + display_offset
+                        let cursor_display_line = cursor_line as i32 + display_offset;
+                        let is_cursor = is_focused
+                            && cursor_display_line >= 0
+                            && line_idx == cursor_display_line as usize
+                            && col_idx == cursor_col;
                         let is_selected = is_focused && selection.contains(col_idx, line_idx);
                         let is_dim = cell.flags.contains(Flags::DIM);
                         let is_inverse = cell.flags.contains(Flags::INVERSE);
@@ -421,6 +484,14 @@ impl App {
 
                 rows
             });
+
+            // Update last_grid for copy operations on the focused pane
+            if is_focused {
+                self.last_grid = cells
+                    .iter()
+                    .map(|row| row.iter().map(|cell| cell.c).collect())
+                    .collect();
+            }
 
             pane_renders.push((x_offset, y_offset, cells));
         }
@@ -515,48 +586,28 @@ impl App {
             None
         };
 
-        // Calculate indicators (show during resize or scroll)
+        // Calculate indicators (show during resize)
         let show_resize = self
             .last_resize
             .is_some_and(|t| t.elapsed() < RESIZE_INDICATOR_DURATION);
-        let show_scroll = self
-            .last_scroll
-            .is_some_and(|t| t.elapsed() < SCROLL_INDICATOR_DURATION);
 
-        let size_indicators: Vec<(f32, f32, String)> = self.layout
-            .panes()
-            .iter()
-            .filter_map(|pane_id| {
-                let rect = rects.get(pane_id)?;
-                let terminal = self.terminals.get(pane_id)?;
-                let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
-                let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
+        let size_indicators: Vec<(f32, f32, String)> = if show_resize {
+            self.layout
+                .panes()
+                .iter()
+                .filter_map(|pane_id| {
+                    let rect = rects.get(pane_id)?;
+                    let terminal = self.terminals.get(pane_id)?;
+                    let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
+                    let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
 
-                let offset = terminal.display_offset();
-                let history = terminal.history_size();
-
-                // Build indicator text based on what's active
-                let mut parts: Vec<String> = Vec::new();
-
-                if show_resize {
                     let (cols, rows) = terminal.size();
-                    parts.push(format!("{}x{}", cols, rows));
-                }
-
-                if show_scroll && offset > 0 {
-                    parts.push(format!("[{}/{}]", offset, history));
-                } else if offset > 0 {
-                    // Always show scroll position if not at bottom (subtle indicator)
-                    parts.push(format!("[{}/{}]", offset, history));
-                }
-
-                if parts.is_empty() {
-                    None
-                } else {
-                    Some((center_x, center_y, parts.join(" ")))
-                }
-            })
-            .collect();
+                    Some((center_x, center_y, format!("{}x{}", cols, rows)))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         // Collect normalized pane rects for CRT shader and find focused pane index
         let mut focused_pane_index: i32 = -1;
@@ -574,11 +625,66 @@ impl App {
             })
             .collect();
 
-        // Get per_pane_crt from config (or config_ui if visible)
-        let per_pane_crt = if self.config_ui.visible {
-            self.config_ui.config.per_pane_crt
+        // Calculate scrollbar opacity based on time since last scroll
+        let scrollbar_opacity = self.last_scroll.map(|t| {
+            let elapsed = t.elapsed();
+            if elapsed < SCROLLBAR_VISIBLE_DURATION {
+                1.0_f32
+            } else if elapsed < SCROLLBAR_VISIBLE_DURATION + SCROLLBAR_FADE_DURATION {
+                let fade_elapsed = elapsed - SCROLLBAR_VISIBLE_DURATION;
+                1.0 - (fade_elapsed.as_secs_f32() / SCROLLBAR_FADE_DURATION.as_secs_f32())
+            } else {
+                0.0
+            }
+        }).unwrap_or(0.0);
+
+        // Calculate scrollbars for each pane
+        // Each scrollbar is (x, y, height, thumb_start, thumb_height, opacity) in pixels
+        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = if scrollbar_opacity > 0.001 {
+            self.layout
+                .panes()
+                .iter()
+                .filter_map(|pane_id| {
+                    let rect = rects.get(pane_id)?;
+                    let terminal = self.terminals.get(pane_id)?;
+
+                    let history = terminal.history_size();
+                    if history == 0 {
+                        return None; // No scrollback, no scrollbar
+                    }
+
+                    let offset = terminal.display_offset();
+                    let (_, rows) = terminal.size();
+                    let total_lines = history + rows as usize;
+
+                    // Scrollbar position (right edge of pane, with some margin)
+                    let pane_x = rect.x * win_width as f32;
+                    let pane_y = rect.y * win_height as f32 + PANE_PADDING;
+                    let pane_h = rect.height * win_height as f32 - PANE_PADDING * 2.0;
+                    let pane_w = rect.width * win_width as f32;
+
+                    let scrollbar_x = pane_x + pane_w - PANE_PADDING - 2.0; // 2px from right edge
+                    let track_height = pane_h;
+
+                    // Thumb size proportional to visible portion
+                    let visible_fraction = (rows as f32) / (total_lines as f32);
+                    let thumb_height = (track_height * visible_fraction).max(20.0); // Minimum 20px
+
+                    // Thumb position: offset 0 = at bottom, offset = history = at top
+                    // When offset = 0, thumb should be at bottom (track_height - thumb_height)
+                    // When offset = history, thumb should be at top (0)
+                    let scroll_fraction = if history > 0 {
+                        offset as f32 / history as f32
+                    } else {
+                        0.0
+                    };
+                    let thumb_start = (1.0 - scroll_fraction) * (track_height - thumb_height);
+
+                    Some((scrollbar_x, pane_y, track_height, thumb_start, thumb_height, scrollbar_opacity))
+                })
+                .collect()
         } else {
-            self.config.per_pane_crt
+            Vec::new()
         };
 
         // If config UI is visible, render it instead of terminals
@@ -625,6 +731,7 @@ impl App {
                 &[],
                 None,
                 &[],
+                &[], // No scrollbars in config UI
                 &[(0.0, 0.0, 1.0, 1.0)],
                 ui_per_pane_crt,
                 self.debug_grid,
@@ -663,6 +770,7 @@ impl App {
                 &separators,
                 focus_rect,
                 &size_indicators,
+                &scrollbars,
                 &pane_rects_normalized,
                 per_pane_crt,
                 self.debug_grid,
@@ -840,8 +948,8 @@ impl ApplicationHandler for App {
                 let focused = self.layout.focused_pane();
                 if let Some(terminal) = self.terminals.get(&focused) {
                     let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => -y as i32 * 3,
-                        MouseScrollDelta::PixelDelta(pos) => -(pos.y / 20.0) as i32,
+                        MouseScrollDelta::LineDelta(_, y) => y as i32 * 3,
+                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as i32,
                     };
                     if lines != 0 {
                         terminal.scroll(lines);
