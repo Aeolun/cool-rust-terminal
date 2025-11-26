@@ -14,7 +14,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
@@ -818,9 +818,13 @@ impl ApplicationHandler for App {
             return;
         }
 
+        // Load application icon
+        let icon = load_icon();
+
         let window_attrs = WindowAttributes::default()
             .with_title("cool-rust-term")
-            .with_inner_size(LogicalSize::new(1200, 800));
+            .with_inner_size(LogicalSize::new(1200, 800))
+            .with_window_icon(icon);
 
         let window = Arc::new(
             event_loop
@@ -1141,6 +1145,13 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+}
+
+fn load_icon() -> Option<Icon> {
+    let icon_bytes = include_bytes!("../../../assets/icon.png");
+    let image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Icon::from_rgba(image.into_raw(), width, height).ok()
 }
 
 fn main() -> Result<()> {
