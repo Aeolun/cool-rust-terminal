@@ -18,7 +18,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
-use crt_core::{Config, ColorScheme};
+use crt_core::{Config, ColorScheme, ScanlineMode};
 use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::Terminal;
@@ -85,10 +85,13 @@ fn dim_color(color: [f32; 4]) -> [f32; 4] {
 
 const PANE_PADDING: f32 = 8.0; // Pixels of padding around each pane's content
 
+/// Buffer-relative cell position (row can be negative for scrollback history)
 #[derive(Clone, Copy, Debug, Default)]
 struct CellPos {
     col: usize,
-    row: usize,
+    /// Buffer-relative row: 0 = first screen line when not scrolled,
+    /// negative = scrollback history, positive when scrolled up
+    row: i32,
 }
 
 #[derive(Default)]
@@ -119,7 +122,8 @@ impl Selection {
         )
     }
 
-    fn contains(&self, col: usize, row: usize) -> bool {
+    /// Check if a buffer-relative position is within the selection
+    fn contains(&self, col: usize, row: i32) -> bool {
         if !self.active && self.start.row == self.end.row && self.start.col == self.end.col {
             return false;
         }
@@ -142,6 +146,13 @@ impl Selection {
 const RESIZE_INDICATOR_DURATION: Duration = Duration::from_millis(1000);
 const SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(1500);
 const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
+const DEFAULT_FPS: u32 = 60; // Fallback if we can't detect refresh rate
+
+// Startup hint timing (after power-on animation)
+const POWERON_DURATION: f32 = 1.05; // Must match shader's POWERON_TOTAL
+const STARTUP_HINT_DELAY: f32 = POWERON_DURATION;
+const STARTUP_HINT_DURATION: f32 = 2.0;
+const STARTUP_HINT_FADE: f32 = 0.5;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -155,9 +166,18 @@ struct App {
     last_grid: Vec<Vec<char>>,
     last_resize: Option<Instant>,
     last_scroll: Option<Instant>,
+    last_frame: Instant,
+    frame_duration: Duration,
+    fps_samples: [f32; 60],
+    fps_sample_idx: usize,
+    app_start: Instant,
     config: Config,
     config_ui: ConfigUI,
     debug_grid: bool,
+    beam_paused: bool,
+    beam_step_held: bool,       // Is step key currently held
+    beam_step_delay_ms: u32,    // Delay between steps when holding (in ms)
+    beam_step_last: Instant,    // Last time we stepped
 }
 
 impl App {
@@ -177,10 +197,29 @@ impl App {
             last_grid: Vec::new(),
             last_resize: None,
             last_scroll: None,
+            last_frame: Instant::now(),
+            frame_duration: Duration::from_nanos(1_000_000_000 / (DEFAULT_FPS * 2) as u64),
+            fps_samples: [0.0; 60],
+            fps_sample_idx: 0,
+            app_start: Instant::now(),
             config_ui: ConfigUI::new(config.clone()),
             config,
             debug_grid: false,
+            beam_paused: false,
+            beam_step_held: false,
+            beam_step_delay_ms: 100,  // Start at 100ms between steps
+            beam_step_last: Instant::now(),
         }
+    }
+
+    /// Record a frame time sample and return the average FPS
+    fn record_frame_time(&mut self, dt: f32) -> f32 {
+        self.fps_samples[self.fps_sample_idx] = dt;
+        self.fps_sample_idx = (self.fps_sample_idx + 1) % self.fps_samples.len();
+
+        let sum: f32 = self.fps_samples.iter().sum();
+        let avg_dt = sum / self.fps_samples.len() as f32;
+        if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 }
     }
 
     /// Returns the currently active config - either the preview config if
@@ -193,60 +232,99 @@ impl App {
         }
     }
 
-    /// Invert the barrel distortion applied by the CRT shader.
-    /// Given a screen position (distorted), returns the undistorted position.
-    fn invert_barrel_distortion(&self, x: f64, y: f64) -> (f64, f64) {
+    /// Convert pixel coordinates to cell position, also returns debug info:
+    /// Returns None if pointing at the void (outside CRT content area)
+    /// Otherwise returns (cell_pos, content_pixel, pane_local_pixel, pane_offset)
+    fn pixel_to_cell_debug(&self, x: f64, y: f64) -> Option<(CellPos, (f64, f64), (f64, f64), (f64, f64))> {
         let Some(renderer) = &self.renderer else {
-            return (x, y);
+            return None;
         };
 
         let curvature = self.current_config().effects.screen_curvature as f64;
-        if curvature.abs() < 0.0001 {
-            return (x, y);
-        }
-
+        let per_pane_crt = self.current_config().per_pane_crt;
         let (win_width, win_height) = renderer.window_size();
+        let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
+        let focused = self.layout.focused_pane();
 
-        // Convert pixel coords to normalized UV (0-1)
-        let uv_x = x / win_width as f64;
-        let uv_y = y / win_height as f64;
+        let rect = rects.get(&focused)?;
 
-        // Convert to centered coords (-1 to 1)
-        let dist_x = uv_x * 2.0 - 1.0;
-        let dist_y = uv_y * 2.0 - 1.0;
+        // Pane bounds in pixels (with padding)
+        let pane_x = (rect.x * win_width as f32 + PANE_PADDING) as f64;
+        let pane_y = (rect.y * win_height as f32 + PANE_PADDING) as f64;
+        let pane_w = (rect.width * win_width as f32 - PANE_PADDING * 2.0) as f64;
+        let pane_h = (rect.height * win_height as f32 - PANE_PADDING * 2.0) as f64;
 
-        // Iteratively solve for the undistorted position
-        // The forward transform is: distorted = centered * (1 + k * |centered|^2)
-        // We iterate: centered = distorted / (1 + k * |centered|^2)
-        let mut cx = dist_x;
-        let mut cy = dist_y;
+        let (content_x, content_y) = if curvature.abs() < 0.0001 {
+            // No distortion
+            (x, y)
+        } else if per_pane_crt {
+            // Per-pane mode: apply distortion in local pane space
+            // Convert to local pane UV (0-1)
+            let local_uv_x = (x - pane_x) / pane_w;
+            let local_uv_y = (y - pane_y) / pane_h;
 
-        for _ in 0..5 {
-            let r2 = cx * cx + cy * cy;
+            // Convert to centered coords (-1 to 1)
+            let centered_x = local_uv_x * 2.0 - 1.0;
+            let centered_y = local_uv_y * 2.0 - 1.0;
+
+            // Apply barrel distortion
+            let r2 = centered_x * centered_x + centered_y * centered_y;
             let scale = 1.0 + curvature * r2;
-            cx = dist_x / scale;
-            cy = dist_y / scale;
-        }
+            let distorted_x = centered_x * scale;
+            let distorted_y = centered_y * scale;
 
-        // Convert back to UV (0-1) then to pixel coords
-        let undist_uv_x = cx * 0.5 + 0.5;
-        let undist_uv_y = cy * 0.5 + 0.5;
+            // Convert back to local UV
+            let content_local_x = distorted_x * 0.5 + 0.5;
+            let content_local_y = distorted_y * 0.5 + 0.5;
 
-        (undist_uv_x * win_width as f64, undist_uv_y * win_height as f64)
-    }
+            // Check if in void
+            if content_local_x < 0.0 || content_local_x > 1.0 || content_local_y < 0.0 || content_local_y > 1.0 {
+                return None;
+            }
 
-    fn pixel_to_cell(&self, x: f64, y: f64) -> CellPos {
-        let Some(renderer) = &self.renderer else {
-            return CellPos::default();
+            // Convert back to global pixel coords
+            (pane_x + content_local_x * pane_w, pane_y + content_local_y * pane_h)
+        } else {
+            // Whole-screen mode: apply distortion globally
+            let uv_x = x / win_width as f64;
+            let uv_y = y / win_height as f64;
+
+            let centered_x = uv_x * 2.0 - 1.0;
+            let centered_y = uv_y * 2.0 - 1.0;
+
+            let r2 = centered_x * centered_x + centered_y * centered_y;
+            let scale = 1.0 + curvature * r2;
+            let distorted_x = centered_x * scale;
+            let distorted_y = centered_y * scale;
+
+            let content_uv_x = distorted_x * 0.5 + 0.5;
+            let content_uv_y = distorted_y * 0.5 + 0.5;
+
+            if content_uv_x < 0.0 || content_uv_x > 1.0 || content_uv_y < 0.0 || content_uv_y > 1.0 {
+                return None;
+            }
+
+            (content_uv_x * win_width as f64, content_uv_y * win_height as f64)
         };
 
-        // Invert the barrel distortion to get the undistorted position
-        let (ux, uy) = self.invert_barrel_distortion(x, y);
-
         let (cell_w, cell_h) = renderer.cell_size();
-        let col = (ux / cell_w as f64).floor() as usize;
-        let row = (uy / cell_h as f64).floor() as usize;
-        CellPos { col, row }
+        let local_x = content_x - pane_x;
+        let local_y = content_y - pane_y;
+        let col = (local_x / cell_w as f64).floor().max(0.0) as usize;
+        let screen_row = (local_y / cell_h as f64).floor().max(0.0) as i32;
+
+        // Convert screen row to buffer-relative row
+        let display_offset = self.terminals
+            .get(&focused)
+            .map(|t| t.display_offset() as i32)
+            .unwrap_or(0);
+        let row = screen_row - display_offset;
+
+        Some((CellPos { col, row }, (content_x, content_y), (local_x, local_y), (pane_x, pane_y)))
+    }
+
+    fn pixel_to_cell(&self, x: f64, y: f64) -> Option<CellPos> {
+        self.pixel_to_cell_debug(x, y).map(|(pos, _, _, _)| pos)
     }
 
     fn pixel_to_normalized(&self, x: f64, y: f64) -> (f32, f32) {
@@ -261,36 +339,44 @@ impl App {
     }
 
     fn copy_selection(&mut self) {
-        if self.last_grid.is_empty() {
+        let focused = self.layout.focused_pane();
+        let Some(terminal) = self.terminals.get(&focused) else {
             return;
-        }
+        };
+
         let (start, end) = self.selection.normalized();
-        let mut text = String::new();
 
-        for row in start.row..=end.row {
-            if row >= self.last_grid.len() {
-                break;
-            }
-            let row_data = &self.last_grid[row];
-            let col_start = if row == start.row { start.col } else { 0 };
-            let col_end = if row == end.row {
-                end.col.min(row_data.len().saturating_sub(1))
-            } else {
-                row_data.len().saturating_sub(1)
-            };
+        // Read directly from terminal grid using buffer-relative coordinates
+        let text = terminal.with_grid(|grid| {
+            use alacritty_terminal::grid::Dimensions;
+            use alacritty_terminal::index::{Column, Line};
+            let cols = grid.columns();
+            let mut text = String::new();
 
-            for col in col_start..=col_end {
-                if col < row_data.len() {
-                    let c = row_data[col];
-                    if c != '\0' {
+            for row in start.row..=end.row {
+                let line = Line(row);
+                let col_start = if row == start.row { start.col } else { 0 };
+                let col_end = if row == end.row {
+                    end.col.min(cols.saturating_sub(1))
+                } else {
+                    cols.saturating_sub(1)
+                };
+
+                for col in col_start..=col_end {
+                    let cell = &grid[line][Column(col)];
+                    let c = cell.c;
+                    if c != ' ' && c != '\0' {
                         text.push(c);
+                    } else if c == ' ' {
+                        text.push(' ');
                     }
                 }
+                if row != end.row {
+                    text.push('\n');
+                }
             }
-            if row != end.row {
-                text.push('\n');
-            }
-        }
+            text
+        });
 
         // Trim trailing whitespace from each line but keep structure
         let trimmed: String = text
@@ -358,7 +444,17 @@ impl App {
         }
     }
 
-    fn render_terminals(&mut self) {
+    fn render_terminals(&mut self, dt: f32) {
+        // Record frame time for FPS display
+        let fps = self.record_frame_time(dt);
+
+        // Get mouse debug info before mutable borrow (None if in the void or debug disabled)
+        let mouse_debug = if self.debug_grid {
+            self.pixel_to_cell_debug(self.mouse_pos.0, self.mouse_pos.1)
+        } else {
+            None
+        };
+
         // Fetch config values before mutable borrow of renderer
         let current_cfg = self.current_config();
         let color_scheme = current_cfg.color_scheme.clone();
@@ -369,6 +465,7 @@ impl App {
         };
 
         let (win_width, win_height) = renderer.window_size();
+        let (cell_w, cell_h) = renderer.cell_size();
         let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
         let focused_pane = self.layout.focused_pane();
 
@@ -433,7 +530,9 @@ impl App {
                             && cursor_display_line >= 0
                             && line_idx == cursor_display_line as usize
                             && col_idx == cursor_col;
-                        let is_selected = is_focused && selection.contains(col_idx, line_idx);
+                        // Selection uses buffer-relative rows (screen_row - display_offset)
+                        let buffer_row = line_idx as i32 - display_offset;
+                        let is_selected = is_focused && selection.contains(col_idx, buffer_row);
                         let is_dim = cell.flags.contains(Flags::DIM);
                         let is_inverse = cell.flags.contains(Flags::INVERSE);
 
@@ -591,7 +690,7 @@ impl App {
             .last_resize
             .is_some_and(|t| t.elapsed() < RESIZE_INDICATOR_DURATION);
 
-        let size_indicators: Vec<(f32, f32, String)> = if show_resize {
+        let mut size_indicators: Vec<(f32, f32, String)> = if show_resize {
             self.layout
                 .panes()
                 .iter()
@@ -608,6 +707,33 @@ impl App {
         } else {
             Vec::new()
         };
+
+        // Add FPS counter in bottom-left when debug grid is enabled
+        if self.debug_grid {
+            let fps_text = format!("{:.0} FPS", fps);
+            let text_width = fps_text.len() as f32 * cell_w;
+            // Position: bottom-left, with some padding
+            let x = text_width / 2.0 + cell_w;
+            let y = win_height as f32 - cell_h * 1.5;
+            size_indicators.push((x, y, fps_text));
+        }
+
+        // Add startup hint after power-on animation
+        if self.config.behavior.show_startup_hint && !self.config_ui.visible {
+            let elapsed = self.app_start.elapsed().as_secs_f32();
+            let hint_start = STARTUP_HINT_DELAY;
+            let hint_end = hint_start + STARTUP_HINT_DURATION + STARTUP_HINT_FADE;
+
+            if elapsed >= hint_start && elapsed < hint_end {
+                let hint_text = "Ctrl+, or Ctrl+Shift+P for settings";
+                // Position in center of focused pane
+                if let Some(rect) = rects.get(&focused_pane) {
+                    let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
+                    let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
+                    size_indicators.push((center_x, center_y, hint_text.to_string()));
+                }
+            }
+        }
 
         // Collect normalized pane rects for CRT shader and find focused pane index
         let mut focused_pane_index: i32 = -1;
@@ -689,11 +815,17 @@ impl App {
 
         // If config UI is visible, render it instead of terminals
         if self.config_ui.visible {
-            // Live preview font changes
-            let preview_font = self.config_ui.config.font;
-            let preview_font_size = self.config_ui.config.font_size;
-            if let Err(e) = renderer.set_font(preview_font, preview_font_size) {
-                tracing::error!("Failed to preview font: {}", e);
+            // Live preview font changes - handle both BDF and TTF
+            if let Some(bdf_font) = self.config_ui.config.bdf_font {
+                if let Err(e) = renderer.set_bdf_font(bdf_font) {
+                    tracing::error!("Failed to preview BDF font: {}", e);
+                }
+            } else {
+                let preview_font = self.config_ui.config.font;
+                let preview_font_size = self.config_ui.config.font_size;
+                if let Err(e) = renderer.set_font(preview_font, preview_font_size) {
+                    tracing::error!("Failed to preview font: {}", e);
+                }
             }
 
             let (cell_w, cell_h) = renderer.cell_size();
@@ -708,6 +840,10 @@ impl App {
             let effects = EffectParams {
                 curvature: self.config_ui.config.effects.screen_curvature,
                 scanline_intensity: self.config_ui.config.effects.scanline_intensity,
+                scanline_mode: match self.config_ui.config.effects.scanline_mode {
+                    ScanlineMode::RowBased => 0,
+                    ScanlineMode::Pixel => 1,
+                },
                 bloom: self.config_ui.config.effects.bloom,
                 burn_in: self.config_ui.config.effects.burn_in,
                 focus_glow_radius: self.config_ui.config.effects.focus_glow_radius,
@@ -721,6 +857,11 @@ impl App {
                 content_scale_x: self.config_ui.config.effects.content_scale_x,
                 content_scale_y: self.config_ui.config.effects.content_scale_y,
                 glow_color: [fg[0], fg[1], fg[2], 1.0],
+                // Beam sweep / interlacing (disabled in config UI preview for now)
+                interlace_enabled: false,
+                beam_speed_divisor: 0,
+                beam_paused: false,
+                beam_step_count: 0,
             };
 
             // Use per_pane_crt from config UI so user can preview glow while adjusting
@@ -735,6 +876,7 @@ impl App {
                 &[(0.0, 0.0, 1.0, 1.0)],
                 ui_per_pane_crt,
                 self.debug_grid,
+                &[], // No debug lines in config UI
                 0,     // pane 0 is focused (the whole screen) so glow shows
                 effects,
             ) {
@@ -742,14 +884,21 @@ impl App {
             }
         } else {
             // Ensure we're using the saved config's font (in case preview changed it)
-            if let Err(e) = renderer.set_font(self.config.font, self.config.font_size) {
-                tracing::error!("Failed to restore font: {}", e);
+            // BDF fonts take priority over TTF fonts
+            if self.config.bdf_font.is_none() {
+                if let Err(e) = renderer.set_font(self.config.font, self.config.font_size) {
+                    tracing::error!("Failed to restore font: {}", e);
+                }
             }
 
             let fg = self.config.color_scheme.foreground;
             let effects = EffectParams {
                 curvature: self.config.effects.screen_curvature,
                 scanline_intensity: self.config.effects.scanline_intensity,
+                scanline_mode: match self.config.effects.scanline_mode {
+                    ScanlineMode::RowBased => 0,
+                    ScanlineMode::Pixel => 1,
+                },
                 bloom: self.config.effects.bloom,
                 burn_in: self.config.effects.burn_in,
                 focus_glow_radius: self.config.effects.focus_glow_radius,
@@ -763,6 +912,39 @@ impl App {
                 content_scale_x: self.config.effects.content_scale_x,
                 content_scale_y: self.config.effects.content_scale_y,
                 glow_color: [fg[0], fg[1], fg[2], 1.0],
+                // Beam sweep / interlacing simulation
+                // At 240Hz with divisor 4: 60 fields/sec (NTSC timing)
+                // beam_speed_divisor 0 disables beam simulation
+                interlace_enabled: self.config.effects.interlace_enabled,
+                beam_speed_divisor: if self.config.effects.beam_simulation_enabled { 4 } else { 0 },
+                beam_paused: self.beam_paused,
+                beam_step_count: {
+                    // Step if key is held and enough time has passed
+                    let should_step = self.beam_step_held
+                        && self.beam_step_last.elapsed() >= Duration::from_millis(self.beam_step_delay_ms as u64);
+                    if should_step {
+                        self.beam_step_last = Instant::now();
+                        1
+                    } else {
+                        0
+                    }
+                },
+            };
+
+            // Build debug visualization lines - green rectangle around hovered cell
+            let debug_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = if let Some((cell_pos, _content, _local, pane_offset)) = mouse_debug {
+                let green = [0.0, 1.0, 0.0, 1.0];
+                let (pane_x, pane_y) = (pane_offset.0 as f32, pane_offset.1 as f32);
+                let cell_x = pane_x + cell_pos.col as f32 * cell_w;
+                let cell_y = pane_y + cell_pos.row as f32 * cell_h;
+                vec![
+                    (cell_x, cell_y, cell_x + cell_w, cell_y, 2.0, green),                     // top
+                    (cell_x, cell_y + cell_h, cell_x + cell_w, cell_y + cell_h, 2.0, green),   // bottom
+                    (cell_x, cell_y, cell_x, cell_y + cell_h, 2.0, green),                     // left
+                    (cell_x + cell_w, cell_y, cell_x + cell_w, cell_y + cell_h, 2.0, green),   // right
+                ]
+            } else {
+                Vec::new()
             };
 
             if let Err(e) = renderer.render_panes(
@@ -774,6 +956,7 @@ impl App {
                 &pane_rects_normalized,
                 per_pane_crt,
                 self.debug_grid,
+                &debug_lines,
                 focused_pane_index,
                 effects,
             ) {
@@ -833,12 +1016,21 @@ impl ApplicationHandler for App {
         );
 
         // Initialize renderer with font from config
-        let renderer = pollster::block_on(Renderer::new(
+        let mut renderer = pollster::block_on(Renderer::new(
             Arc::clone(&window),
             self.config.font,
             self.config.font_size,
         ))
         .expect("Failed to create renderer");
+
+        // If BDF font is configured, load and apply it
+        if let Some(bdf_font) = self.config.bdf_font {
+            if let Err(e) = renderer.set_bdf_font(bdf_font) {
+                tracing::error!("Failed to load BDF font {:?}: {}", bdf_font, e);
+            } else {
+                tracing::info!("Loaded BDF font: {}", bdf_font.label());
+            }
+        }
 
         // Log scale factor for debugging
         let scale_factor = window.scale_factor();
@@ -848,6 +1040,20 @@ impl ApplicationHandler for App {
             physical_size.width,
             physical_size.height,
             scale_factor
+        );
+
+        // Query monitor refresh rate and set frame duration to 2x refresh rate (max 240fps)
+        let refresh_hz = window
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .map(|mhz| mhz / 1000)
+            .unwrap_or(DEFAULT_FPS);
+        let target_fps = (refresh_hz * 2).min(240); // 2x refresh rate, capped at 240fps
+        self.frame_duration = Duration::from_nanos(1_000_000_000 / target_fps as u64);
+        tracing::info!(
+            "Monitor refresh rate: {}Hz, targeting {}fps",
+            refresh_hz,
+            target_fps
         );
 
         self.window = Some(window);
@@ -898,7 +1104,18 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                self.render_terminals();
+                // Frame rate limiting - skip render if too soon
+                let now = Instant::now();
+                let elapsed = now.duration_since(self.last_frame);
+                if elapsed >= self.frame_duration {
+                    let dt = elapsed.as_secs_f32();
+                    self.last_frame = now;
+                    self.render_terminals(dt);
+                } else {
+                    // Sleep for remaining time to avoid busy-waiting
+                    std::thread::sleep(self.frame_duration - elapsed);
+                }
+
                 if let Some(window) = &self.window {
                     window.request_redraw();
                 }
@@ -909,7 +1126,10 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
                 if self.selection.active {
-                    self.selection.end = self.pixel_to_cell(position.x, position.y);
+                    // Only update selection if pointing at valid content (not the void)
+                    if let Some(pos) = self.pixel_to_cell(position.x, position.y) {
+                        self.selection.end = pos;
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -934,15 +1154,18 @@ impl ApplicationHandler for App {
                                 }
                             }
 
-                            let pos = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1);
-                            self.selection.start = pos;
-                            self.selection.end = pos;
-                            self.selection.active = true;
+                            // Only start selection if pointing at valid content (not the void)
+                            if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                                self.selection.start = pos;
+                                self.selection.end = pos;
+                                self.selection.active = true;
+                            }
                         }
                         ElementState::Released => {
                             self.selection.active = false;
-                            // Auto-copy on selection release (like iTerm2)
-                            self.copy_selection();
+                            if self.config.behavior.auto_copy_selection {
+                                self.copy_selection();
+                            }
                         }
                     }
                 }
@@ -958,6 +1181,13 @@ impl ApplicationHandler for App {
                     if lines != 0 {
                         terminal.scroll(lines);
                         self.last_scroll = Some(Instant::now());
+
+                        // Update selection end if actively selecting while scrolling
+                        if self.selection.active {
+                            if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                                self.selection.end = pos;
+                            }
+                        }
                     }
                 }
             }
@@ -991,9 +1221,61 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Ctrl+Shift+B: Toggle beam pause (freeze beam position for debugging)
+                    if ctrl && shift && event.logical_key == Key::Character("B".into()) {
+                        self.beam_paused = !self.beam_paused;
+                        tracing::info!("Beam paused: {}", self.beam_paused);
+                        return;
+                    }
+
+                    // Ctrl+Shift+N: Hold to step frames forward (when beam is paused)
+                    if ctrl && shift && event.logical_key == Key::Character("N".into()) {
+                        if self.beam_paused {
+                            self.beam_step_held = true;
+                            // Immediate first step
+                            self.beam_step_last = Instant::now() - Duration::from_millis(self.beam_step_delay_ms as u64);
+                        }
+                        return;
+                    }
+
+                    // Ctrl+Shift+=: Decrease step delay (faster stepping)
+                    if ctrl && shift && (event.logical_key == Key::Character("=".into()) || event.logical_key == Key::Character("+".into())) {
+                        self.beam_step_delay_ms = (self.beam_step_delay_ms.saturating_sub(10)).max(4);
+                        tracing::info!("Beam step delay: {}ms ({:.1} fps)", self.beam_step_delay_ms, 1000.0 / self.beam_step_delay_ms as f32);
+                        return;
+                    }
+
+                    // Ctrl+Shift+-: Increase step delay (slower stepping)
+                    if ctrl && shift && event.logical_key == Key::Character("-".into()) {
+                        self.beam_step_delay_ms = (self.beam_step_delay_ms + 10).min(500);
+                        tracing::info!("Beam step delay: {}ms ({:.1} fps)", self.beam_step_delay_ms, 1000.0 / self.beam_step_delay_ms as f32);
+                        return;
+                    }
+
                     // Ctrl+Shift+C: Copy selection
                     if ctrl && shift && event.logical_key == Key::Character("C".into()) {
                         self.copy_selection();
+                        return;
+                    }
+
+                    // Ctrl+Shift+V: Paste from clipboard
+                    if ctrl && shift && event.logical_key == Key::Character("V".into()) {
+                        if let Some(clipboard) = &mut self.clipboard {
+                            if let Ok(text) = clipboard.get_text() {
+                                let focused = self.layout.focused_pane();
+                                if let Some(terminal) = self.terminals.get(&focused) {
+                                    terminal.input(text.as_bytes());
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    // Ctrl+Shift+T: Replay CRT power-on animation
+                    if ctrl && shift && event.logical_key == Key::Character("T".into()) {
+                        if let Some(renderer) = &mut self.renderer {
+                            renderer.replay_power_on();
+                        }
                         return;
                     }
 
@@ -1048,6 +1330,10 @@ impl ApplicationHandler for App {
                                 self.config_ui.current_tab = crate::config_ui::ConfigTab::Appearance;
                                 self.config_ui.selected = 0;
                             }
+                            Key::Character(c) if c == "3" => {
+                                self.config_ui.current_tab = crate::config_ui::ConfigTab::Behavior;
+                                self.config_ui.selected = 0;
+                            }
                             Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
                                 if let Some(action) = self.config_ui.toggle_or_activate() {
                                     match action {
@@ -1055,17 +1341,29 @@ impl ApplicationHandler for App {
                                             let new_config = self.config_ui.save();
                                             // Update font if changed
                                             if let Some(renderer) = &mut self.renderer {
-                                                if new_config.font != self.config.font
-                                                    || (new_config.font_size - self.config.font_size).abs() > 0.1
-                                                {
-                                                    if let Err(e) = renderer.set_font(new_config.font, new_config.font_size) {
-                                                        tracing::error!("Failed to change font: {}", e);
+                                                let font_changed = new_config.bdf_font != self.config.bdf_font
+                                                    || new_config.font != self.config.font
+                                                    || (new_config.font_size - self.config.font_size).abs() > 0.1;
+
+                                                if font_changed {
+                                                    // Apply the appropriate font type
+                                                    if let Some(bdf_font) = new_config.bdf_font {
+                                                        if let Err(e) = renderer.set_bdf_font(bdf_font) {
+                                                            tracing::error!("Failed to change to BDF font: {}", e);
+                                                        } else {
+                                                            tracing::info!("Font changed to BDF: {}", bdf_font.label());
+                                                            self.config = new_config.clone();
+                                                            self.resize_terminals();
+                                                        }
                                                     } else {
-                                                        tracing::info!("Font changed to {} at {}px",
-                                                            new_config.font.label(), new_config.font_size);
-                                                        // Resize terminals for new font
-                                                        self.config = new_config.clone();
-                                                        self.resize_terminals();
+                                                        if let Err(e) = renderer.set_font(new_config.font, new_config.font_size) {
+                                                            tracing::error!("Failed to change font: {}", e);
+                                                        } else {
+                                                            tracing::info!("Font changed to {} at {}px",
+                                                                new_config.font.label(), new_config.font_size);
+                                                            self.config = new_config.clone();
+                                                            self.resize_terminals();
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1140,6 +1438,11 @@ impl ApplicationHandler for App {
                             terminal.input(&bytes);
                         }
                     }
+                } else if event.state == ElementState::Released {
+                    // Handle key releases
+                    if event.logical_key == Key::Character("N".into()) || event.logical_key == Key::Character("n".into()) {
+                        self.beam_step_held = false;
+                    }
                 }
             }
             _ => {}
@@ -1155,6 +1458,10 @@ fn load_icon() -> Option<Icon> {
 }
 
 fn main() -> Result<()> {
+    // Force 1:1 pixel scaling on X11 (winit guesses wrong sometimes)
+    // TODO: Make this configurable for high-DPI displays
+    std::env::set_var("WINIT_X11_SCALE_FACTOR", "1");
+
     tracing_subscriber::fmt::init();
 
     tracing::info!("Starting cool-rust-term");

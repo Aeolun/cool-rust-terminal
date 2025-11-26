@@ -33,6 +33,7 @@ struct CrtUniforms {
     vignette: f32,            // Vignette intensity (edge darkening)
     // Bezel settings
     bezel_enabled: u32,       // 0 = no bezel, 1 = show bezel
+    scanline_mode: u32,       // 0 = row-based (per text row), 1 = pixel-level (real CRT)
     bezel_size: vec2<f32>,    // Bezel image size (width, height) in pixels
     // 9-patch borders in pixels
     bezel_border_top: f32,
@@ -149,21 +150,29 @@ fn temporal_noise(screen_pos: vec2<f32>, time: f32) -> f32 {
     return fract(h * 17.0 + sin(dot(p3.zxy, vec3<f32>(93.989, 67.345, 28.764))) * 23421.6312);
 }
 
-// Scanline effect - aligned to text rows for readable text
-// Each text row gets one scanline cycle, so dark bands fall BETWEEN rows, not through characters
+// Scanline effect with two modes:
+// - Row-based (mode 0): One scanline cycle per text row, works with any font
+// - Pixel-level (mode 1): Real CRT scanlines, best with BDF bitmap fonts
 fn scanline(uv: vec2<f32>, intensity: f32, region_height: f32, time: f32) -> f32 {
-    // Calculate number of text rows in this region
-    // This aligns scanlines to character cells so text stays readable
-    let row_count = region_height / uniforms.cell_height;
-
     // Slow drift - moves in whole scanline increments to avoid moiré
     let drift = time * 0.3; // Slow roll speed
 
-    let row_y = uv.y * row_count + drift;
-    let frac_y = fract(row_y);
+    var scanline_count: f32;
+    if (uniforms.scanline_mode == 0u) {
+        // Row-based: one scanline cycle per text row
+        // This aligns scanlines to character cells so text stays readable with TTF fonts
+        scanline_count = region_height / uniforms.cell_height;
+    } else {
+        // Pixel-level: real CRT scanlines (every 2 pixels has one dark band)
+        // This creates the classic phosphor line look, works best with BDF bitmap fonts
+        // where character strokes are designed to align with scanlines
+        scanline_count = region_height / 2.0;
+    }
 
-    // Triangle wave: brightest in middle of row (where text is), darkest at edges (between rows)
-    // This keeps text bright while darkening the gaps between lines
+    let scanline_y = uv.y * scanline_count + drift;
+    let frac_y = fract(scanline_y);
+
+    // Triangle wave: brightest in middle of scanline, darkest at edges
     let line_mask = 1.0 - abs(frac_y * 2.0 - 1.0);
 
     return 1.0 - intensity * (1.0 - line_mask);
@@ -184,6 +193,98 @@ fn flicker(time: f32, intensity: f32) -> f32 {
 
     let total = power_60hz + harmonic_120hz + drift + hf_noise;
     return 1.0 + total * intensity;
+}
+
+// Power-on timing constants
+const POWERON_WARMUP: f32 = 0.15;
+const POWERON_EXPAND: f32 = 0.7;
+const POWERON_SETTLE: f32 = 0.2;
+const POWERON_TOTAL: f32 = 1.05; // WARMUP + EXPAND + SETTLE
+const POWERON_H_BURST: f32 = 0.05; // Fast horizontal burst duration
+const POWERON_H_BURST_TARGET: f32 = 0.2; // Horizontal reaches 20% in burst
+
+// Get the current power-on aperture as vec2 (x = horizontal, y = vertical)
+// Horizontal scales faster initially (burst to 20% in 0.05s)
+fn get_poweron_aperture(time: f32) -> vec2<f32> {
+    let min_aperture = 0.002; // Start as a tiny dot
+
+    if (time > POWERON_TOTAL) {
+        return vec2<f32>(1.0);
+    }
+    if (time < POWERON_WARMUP) {
+        // During warmup, aperture is essentially a dot
+        return vec2<f32>(min_aperture);
+    }
+
+    let expand_time = time - POWERON_WARMUP;
+    if (expand_time >= POWERON_EXPAND) {
+        return vec2<f32>(1.0);
+    }
+
+    // Vertical: normal ease-out scaling
+    let v_progress = expand_time / POWERON_EXPAND;
+    let v_eased = 1.0 - pow(1.0 - v_progress, 2.0);
+    let aperture_y = min_aperture + v_eased * (1.0 - min_aperture);
+
+    // Horizontal: fast burst to 20%, then continue normal scaling
+    var aperture_x: f32;
+    if (expand_time < POWERON_H_BURST) {
+        // Fast burst phase: 0 to 20% in 0.05s
+        let burst_progress = expand_time / POWERON_H_BURST;
+        let burst_eased = 1.0 - pow(1.0 - burst_progress, 2.0);
+        aperture_x = min_aperture + burst_eased * (POWERON_H_BURST_TARGET - min_aperture);
+    } else {
+        // After burst: continue from 20% to 100%
+        let remaining_time = expand_time - POWERON_H_BURST;
+        let remaining_duration = POWERON_EXPAND - POWERON_H_BURST;
+        let h_progress = remaining_time / remaining_duration;
+        let h_eased = 1.0 - pow(1.0 - h_progress, 2.0);
+        aperture_x = POWERON_H_BURST_TARGET + h_eased * (1.0 - POWERON_H_BURST_TARGET);
+    }
+
+    return vec2<f32>(aperture_x, aperture_y);
+}
+
+// Scale UV coordinates to compress image into current aperture
+// Returns the UV that should be sampled to get the compressed image
+fn scale_uv_for_poweron(uv: vec2<f32>, aperture: vec2<f32>) -> vec2<f32> {
+    // Scale UV so full image fits within aperture
+    // UV 0.5 stays at 0.5 (center)
+    // UV at edge of aperture maps to UV at edge of screen (0 or 1)
+    let center = vec2<f32>(0.5);
+    let offset = uv - center;
+    let scaled_offset = offset / aperture;
+    return center + scaled_offset;
+}
+
+// Apply power-on brightness effects
+// This is called AFTER rendering with scaled UVs
+// The scaled UVs + barrel distortion handle boundaries, we just adjust brightness
+fn power_on_effect(color: vec3<f32>, uv: vec2<f32>, time: f32, curvature: f32) -> vec3<f32> {
+    // After animation complete, return normal color
+    if (time > POWERON_TOTAL) {
+        return color;
+    }
+
+    // Get current aperture (x = horizontal, y = vertical)
+    let aperture = get_poweron_aperture(time);
+
+    // Boost brightness based on compression
+    // All the phosphor energy is concentrated in smaller area
+    // Brightness scales as 1/area - when compressed to 10% size, 100x brighter
+    // This naturally clips to white when highly compressed
+    let area_ratio = aperture.x * aperture.y;
+    let brightness_boost = 1.0 / area_ratio;
+
+    // During settling phase, fade boost to normal
+    let expand_time = time - POWERON_WARMUP;
+    if (expand_time > POWERON_EXPAND) {
+        let settle_progress = (expand_time - POWERON_EXPAND) / POWERON_SETTLE;
+        let fade = 1.0 - settle_progress;
+        return color * (1.0 + fade * (brightness_boost - 1.0));
+    }
+
+    return color * brightness_boost;
 }
 
 // Simple bloom by sampling neighbors
@@ -694,6 +795,13 @@ fn apply_pane_bezel_crt(screen_uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    var color: vec3<f32>;
+    var screen_uv: vec2<f32>; // UV within the actual CRT tube (0-1)
+
+    // Get power-on aperture and calculate scaled UV for compressed image
+    let aperture = get_poweron_aperture(uniforms.time);
+    let scaled_uv = scale_uv_for_poweron(in.uv, aperture);
+
     // Check if bezel is enabled
     if (uniforms.bezel_enabled != 0u) {
         if (uniforms.per_pane_mode != 0u) {
@@ -704,35 +812,51 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
                 return vec4<f32>(0.0, 0.0, 0.0, 1.0);
             }
 
-            // Render CRT content for this pane (fixed screen shape, scaled content)
-            let screen_color = apply_pane_bezel_crt(in.uv, pane_idx);
+            // Get local UV within the pane for power-on effect
+            screen_uv = global_to_local_uv(in.uv, pane_idx);
 
-            // Render bezel for this pane
+            // Scale the local UV for power-on compression
+            let scaled_local = scale_uv_for_poweron(screen_uv, aperture);
+            let render_uv = local_to_global_uv(scaled_local, pane_idx);
+
+            // Render CRT content for this pane with scaled UVs
+            let screen_color = apply_pane_bezel_crt(render_uv, pane_idx);
+
+            // Render bezel for this pane (bezel uses original UV)
             let bezel_sample = sample_pane_bezel(in.uv, pane_idx);
-            let final_color = mix(screen_color.rgb, bezel_sample.rgb, bezel_sample.a);
-
-            return vec4<f32>(final_color, 1.0);
+            color = mix(screen_color.rgb, bezel_sample.rgb, bezel_sample.a);
         } else {
             // Single screen + bezel: one CRT for the whole window
-            let screen_color = apply_bezel_mode_crt(in.uv);
+            screen_uv = in.uv;
+
+            let screen_color = apply_bezel_mode_crt(scaled_uv);
 
             let bezel_sample = sample_bezel_9patch(in.uv);
-            let final_color = mix(screen_color.rgb, bezel_sample.rgb, bezel_sample.a);
-
-            return vec4<f32>(final_color, 1.0);
+            color = mix(screen_color.rgb, bezel_sample.rgb, bezel_sample.a);
         }
+    } else if (uniforms.per_pane_mode == 0u) {
+        // No bezel - whole screen mode
+        screen_uv = in.uv;
+        let result = apply_whole_screen_crt(scaled_uv);
+        color = result.rgb;
+    } else {
+        // Per-pane mode without bezel: each pane is its own mini-CRT
+        let pane_idx = find_pane(in.uv);
+        if (pane_idx < 0) {
+            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        }
+        screen_uv = global_to_local_uv(in.uv, pane_idx);
+
+        // Scale the local UV for power-on compression
+        let scaled_local = scale_uv_for_poweron(screen_uv, aperture);
+        let render_uv = local_to_global_uv(scaled_local, pane_idx);
+
+        let result = apply_per_pane_crt(render_uv, pane_idx);
+        color = result.rgb;
     }
 
-    // No bezel - original behavior
-    if (uniforms.per_pane_mode == 0u) {
-        return apply_whole_screen_crt(in.uv);
-    }
+    // Apply CRT power-on effect (masking and brightness)
+    color = power_on_effect(color, screen_uv, uniforms.time, uniforms.curvature);
 
-    // Per-pane mode without bezel: each pane is its own mini-CRT
-    let pane_idx = find_pane(in.uv);
-    if (pane_idx < 0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
-
-    return apply_per_pane_crt(in.uv, pane_idx);
+    return vec4<f32>(color, 1.0);
 }

@@ -1,9 +1,9 @@
 // ABOUTME: Embedded font data for bundled fonts.
 // ABOUTME: All fonts are compiled into the binary for easy distribution.
 
-use crt_core::Font;
+use crt_core::{BdfFont, Font};
 
-// Embed all fonts at compile time
+// Embed all TTF fonts at compile time
 static IBM_VGA: &[u8] = include_bytes!("../../../assets/fonts/1985-ibm-pc-vga/PxPlus_IBM_VGA8.ttf");
 static IBM_BIOS: &[u8] = include_bytes!("../../../assets/fonts/1981-ibm-pc/PxPlus_IBM_BIOS.ttf");
 static IBM_3278: &[u8] = include_bytes!("../../../assets/fonts/1971-ibm-3278/3270-Regular.ttf");
@@ -21,6 +21,20 @@ static INCONSOLATA: &[u8] = include_bytes!("../../../assets/fonts/modern-inconso
 // Fallback fonts with good unicode coverage
 static FALLBACK_HACK: &[u8] = include_bytes!("../../../assets/fonts/fallback-hack/Hack-Regular.ttf");
 static FALLBACK_EMOJI: &[u8] = include_bytes!("../../../assets/fonts/fallback-emoji/NotoEmoji-VariableFont_wght.ttf");
+
+// Embed BDF (bitmap) fonts at compile time
+static BDF_FIXED_6X13: &[u8] = include_bytes!("../../../assets/bdf_fonts/6x13.bdf");
+static BDF_FIXED_7X13: &[u8] = include_bytes!("../../../assets/bdf_fonts/7x13.bdf");
+static BDF_FIXED_7X14: &[u8] = include_bytes!("../../../assets/bdf_fonts/7x14.bdf");
+static BDF_FIXED_8X13: &[u8] = include_bytes!("../../../assets/bdf_fonts/8x13.bdf");
+static BDF_FIXED_9X15: &[u8] = include_bytes!("../../../assets/bdf_fonts/9x15.bdf");
+static BDF_FIXED_9X18: &[u8] = include_bytes!("../../../assets/bdf_fonts/9x18.bdf");
+static BDF_FIXED_10X20: &[u8] = include_bytes!("../../../assets/bdf_fonts/10x20.bdf");
+static BDF_AMSTRAD_CPC: &[u8] = include_bytes!("../../../assets/bdf_fonts/amstrad_cpc_extended.bdf");
+static BDF_PROFONT_12: &[u8] = include_bytes!("../../../assets/bdf_fonts/profont12.bdf");
+static BDF_PROFONT_17: &[u8] = include_bytes!("../../../assets/bdf_fonts/profont17.bdf");
+static BDF_COURIER_12: &[u8] = include_bytes!("../../../assets/bdf_fonts/courR12.bdf");
+static BDF_COURIER_BOLD_14: &[u8] = include_bytes!("../../../assets/bdf_fonts/courB14.bdf");
 
 /// Get the embedded font data for a given font
 pub fn get_font_data(font: Font) -> &'static [u8] {
@@ -51,4 +65,22 @@ pub fn get_fallback_font_data() -> &'static [u8] {
 /// Returns Noto Emoji (monochrome).
 pub fn get_emoji_fallback_font_data() -> &'static [u8] {
     FALLBACK_EMOJI
+}
+
+/// Get the embedded BDF font data for a given BDF font
+pub fn get_bdf_font_data(font: BdfFont) -> &'static [u8] {
+    match font {
+        BdfFont::Fixed6x13 => BDF_FIXED_6X13,
+        BdfFont::Fixed7x13 => BDF_FIXED_7X13,
+        BdfFont::Fixed7x14 => BDF_FIXED_7X14,
+        BdfFont::Fixed8x13 => BDF_FIXED_8X13,
+        BdfFont::Fixed9x15 => BDF_FIXED_9X15,
+        BdfFont::Fixed9x18 => BDF_FIXED_9X18,
+        BdfFont::Fixed10x20 => BDF_FIXED_10X20,
+        BdfFont::AmstradCpc => BDF_AMSTRAD_CPC,
+        BdfFont::ProFont12 => BDF_PROFONT_12,
+        BdfFont::ProFont17 => BDF_PROFONT_17,
+        BdfFont::Courier12 => BDF_COURIER_12,
+        BdfFont::CourierBold14 => BDF_COURIER_BOLD_14,
+    }
 }

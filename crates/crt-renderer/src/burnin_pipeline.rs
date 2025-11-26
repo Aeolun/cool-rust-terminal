@@ -9,7 +9,13 @@ use wgpu::util::DeviceExt;
 struct BurnInUniforms {
     decay: f32,
     brightness: f32,
-    _padding: [f32; 2],
+    // Beam sweep simulation
+    beam_y_start: f32,    // 0.0-1.0, start of current beam band
+    beam_y_end: f32,      // 0.0-1.0, end of current beam band
+    current_field: u32,   // 0 = even lines, 1 = odd lines
+    interlace_enabled: u32, // 0 = disabled, 1 = enabled
+    screen_height: f32,   // Screen height in pixels (for scanline calc)
+    _padding: f32,
 }
 
 pub struct BurnInPipeline {
@@ -40,8 +46,13 @@ impl BurnInPipeline {
             label: Some("Burn-in Uniform Buffer"),
             contents: bytemuck::cast_slice(&[BurnInUniforms {
                 decay: 0.92,      // Phosphor decay rate
-                brightness: 1.0, // Current frame brightness
-                _padding: [0.0, 0.0],
+                brightness: 1.0,  // Current frame brightness
+                beam_y_start: 0.0,
+                beam_y_end: 1.0,  // Full screen by default (no beam simulation)
+                current_field: 0,
+                interlace_enabled: 0,
+                screen_height: 600.0,
+                _padding: 0.0,
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -252,15 +263,31 @@ impl BurnInPipeline {
         self.current_target = 1 - self.current_target;
     }
 
-    /// Update uniforms (decay rate, etc.)
-    pub fn update(&self, queue: &wgpu::Queue, decay: f32, brightness: f32) {
+    /// Update uniforms (decay rate, beam position, etc.)
+    #[allow(clippy::too_many_arguments)]
+    pub fn update(
+        &self,
+        queue: &wgpu::Queue,
+        decay: f32,
+        brightness: f32,
+        beam_y_start: f32,
+        beam_y_end: f32,
+        current_field: u32,
+        interlace_enabled: bool,
+        screen_height: f32,
+    ) {
         queue.write_buffer(
             &self.uniform_buffer,
             0,
             bytemuck::cast_slice(&[BurnInUniforms {
                 decay,
                 brightness,
-                _padding: [0.0, 0.0],
+                beam_y_start,
+                beam_y_end,
+                current_field,
+                interlace_enabled: if interlace_enabled { 1 } else { 0 },
+                screen_height,
+                _padding: 0.0,
             }]),
         );
     }

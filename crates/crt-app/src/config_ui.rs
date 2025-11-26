@@ -2,24 +2,26 @@
 // ABOUTME: Renders a text-based settings panel with keyboard navigation.
 // ABOUTME: Uses tabs to organize settings into Effects and Appearance categories.
 
-use crt_core::{ColorScheme, Config};
+use crt_core::{BdfFont, ColorScheme, Config, ScanlineMode};
 use crt_renderer::RenderCell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigTab {
     Effects,
     Appearance,
+    Behavior,
 }
 
 impl ConfigTab {
     fn all() -> &'static [ConfigTab] {
-        &[ConfigTab::Effects, ConfigTab::Appearance]
+        &[ConfigTab::Effects, ConfigTab::Appearance, ConfigTab::Behavior]
     }
 
     fn label(&self) -> &'static str {
         match self {
             ConfigTab::Effects => "Effects",
             ConfigTab::Appearance => "Appearance",
+            ConfigTab::Behavior => "Behavior",
         }
     }
 
@@ -27,6 +29,7 @@ impl ConfigTab {
         match self {
             ConfigTab::Effects => 0,
             ConfigTab::Appearance => 1,
+            ConfigTab::Behavior => 2,
         }
     }
 }
@@ -36,6 +39,7 @@ pub enum ConfigField {
     // Effects tab
     Curvature,
     Scanlines,
+    ScanlineMode,
     Bloom,
     BurnIn,
     StaticNoise,
@@ -50,10 +54,18 @@ pub enum ConfigField {
     BezelEnabled,
     ContentScaleX,
     ContentScaleY,
+    // Beam simulation (requires 240Hz+)
+    BeamSimulation,
+    Interlace,
     // Appearance tab
-    FontFamily,
-    FontSize,
+    FontType,      // Toggle between TTF and BDF
+    FontFamily,    // TTF font selector (hidden when BDF selected)
+    FontSize,      // TTF font size (hidden when BDF selected)
+    BdfFontFamily, // BDF font selector (hidden when TTF selected)
     ColorSchemeField,
+    // Behavior tab
+    AutoCopySelection,
+    ShowStartupHint,
     // Common
     Save,
     Cancel,
@@ -65,6 +77,7 @@ impl ConfigField {
             // Effects tab
             ConfigField::Curvature,
             ConfigField::Scanlines,
+            ConfigField::ScanlineMode,
             ConfigField::Bloom,
             ConfigField::BurnIn,
             ConfigField::StaticNoise,
@@ -78,10 +91,17 @@ impl ConfigField {
             ConfigField::BezelEnabled,
             ConfigField::ContentScaleX,
             ConfigField::ContentScaleY,
+            ConfigField::BeamSimulation,
+            ConfigField::Interlace,
             // Appearance tab
+            ConfigField::FontType,
             ConfigField::FontFamily,
             ConfigField::FontSize,
+            ConfigField::BdfFontFamily,
             ConfigField::ColorSchemeField,
+            // Behavior tab
+            ConfigField::AutoCopySelection,
+            ConfigField::ShowStartupHint,
             // Common
             ConfigField::Save,
             ConfigField::Cancel,
@@ -90,13 +110,14 @@ impl ConfigField {
 
     /// Returns true if a blank line should be rendered before this field
     fn has_separator_before(&self) -> bool {
-        matches!(self, ConfigField::PerPaneCrt | ConfigField::BezelEnabled)
+        matches!(self, ConfigField::PerPaneCrt | ConfigField::BezelEnabled | ConfigField::BeamSimulation)
     }
 
     fn label(&self) -> &'static str {
         match self {
             ConfigField::Curvature => "Curvature",
             ConfigField::Scanlines => "Scanlines",
+            ConfigField::ScanlineMode => "Scanline Type",
             ConfigField::Bloom => "Bloom",
             ConfigField::BurnIn => "Burn-in",
             ConfigField::StaticNoise => "Static",
@@ -110,9 +131,15 @@ impl ConfigField {
             ConfigField::BezelEnabled => "Bezel",
             ConfigField::ContentScaleX => "H-Size",
             ConfigField::ContentScaleY => "V-Size",
-            ConfigField::FontFamily => "Font",
+            ConfigField::BeamSimulation => "Beam Sim",
+            ConfigField::Interlace => "Interlace",
+            ConfigField::FontType => "Font Type",
+            ConfigField::FontFamily => "TTF Font",
             ConfigField::FontSize => "Font Size",
+            ConfigField::BdfFontFamily => "BDF Font",
             ConfigField::ColorSchemeField => "Colors",
+            ConfigField::AutoCopySelection => "Auto-copy",
+            ConfigField::ShowStartupHint => "Startup hint",
             ConfigField::Save => "[ Save ]",
             ConfigField::Cancel => "[ Cancel ]",
         }
@@ -139,11 +166,11 @@ impl ConfigField {
     }
 
     fn is_toggle(&self) -> bool {
-        matches!(self, ConfigField::PerPaneCrt | ConfigField::BezelEnabled)
+        matches!(self, ConfigField::PerPaneCrt | ConfigField::BezelEnabled | ConfigField::AutoCopySelection | ConfigField::ShowStartupHint | ConfigField::FontType | ConfigField::ScanlineMode | ConfigField::BeamSimulation | ConfigField::Interlace)
     }
 
     fn is_selector(&self) -> bool {
-        matches!(self, ConfigField::FontFamily | ConfigField::ColorSchemeField)
+        matches!(self, ConfigField::FontFamily | ConfigField::BdfFontFamily | ConfigField::ColorSchemeField)
     }
 
     fn is_button(&self) -> bool {
@@ -155,6 +182,7 @@ impl ConfigField {
             // Effects tab
             ConfigField::Curvature
             | ConfigField::Scanlines
+            | ConfigField::ScanlineMode
             | ConfigField::Bloom
             | ConfigField::BurnIn
             | ConfigField::StaticNoise
@@ -167,26 +195,44 @@ impl ConfigField {
             | ConfigField::PerPaneCrt
             | ConfigField::BezelEnabled
             | ConfigField::ContentScaleX
-            | ConfigField::ContentScaleY => Some(ConfigTab::Effects),
+            | ConfigField::ContentScaleY
+            | ConfigField::BeamSimulation
+            | ConfigField::Interlace => Some(ConfigTab::Effects),
             // Appearance tab
-            ConfigField::FontFamily | ConfigField::FontSize | ConfigField::ColorSchemeField => {
+            ConfigField::FontType | ConfigField::FontFamily | ConfigField::FontSize | ConfigField::BdfFontFamily | ConfigField::ColorSchemeField => {
                 Some(ConfigTab::Appearance)
             }
+            // Behavior tab
+            ConfigField::AutoCopySelection | ConfigField::ShowStartupHint => Some(ConfigTab::Behavior),
             // Save/Cancel are on all tabs
             ConfigField::Save | ConfigField::Cancel => None,
         }
     }
 
-    fn fields_for_tab(tab: ConfigTab) -> Vec<ConfigField> {
+    fn fields_for_tab(tab: ConfigTab, config: &Config) -> Vec<ConfigField> {
         let mut fields: Vec<ConfigField> = ConfigField::all()
             .iter()
-            .filter(|f| f.tab() == Some(tab))
+            .filter(|f| f.tab() == Some(tab) && f.should_show(config))
             .copied()
             .collect();
         // Always add Save/Cancel at the end
         fields.push(ConfigField::Save);
         fields.push(ConfigField::Cancel);
         fields
+    }
+
+    /// Returns true if this field should be shown given the current config state
+    fn should_show(&self, config: &Config) -> bool {
+        match self {
+            // TTF-specific fields: only show when BDF is not selected
+            ConfigField::FontFamily | ConfigField::FontSize => config.bdf_font.is_none(),
+            // BDF-specific fields: only show when BDF is selected
+            ConfigField::BdfFontFamily => config.bdf_font.is_some(),
+            // Interlace only shows when beam simulation is enabled
+            ConfigField::Interlace => config.effects.beam_simulation_enabled,
+            // All other fields always show
+            _ => true,
+        }
     }
 }
 
@@ -268,7 +314,7 @@ impl ConfigUI {
     }
 
     fn current_fields(&self) -> Vec<ConfigField> {
-        ConfigField::fields_for_tab(self.current_tab)
+        ConfigField::fields_for_tab(self.current_tab, &self.config)
     }
 
     pub fn hide(&mut self) {
@@ -328,6 +374,40 @@ impl ConfigUI {
                 self.config.effects.bezel_enabled = !self.config.effects.bezel_enabled;
                 None
             }
+            ConfigField::AutoCopySelection => {
+                self.config.behavior.auto_copy_selection = !self.config.behavior.auto_copy_selection;
+                None
+            }
+            ConfigField::ShowStartupHint => {
+                self.config.behavior.show_startup_hint = !self.config.behavior.show_startup_hint;
+                None
+            }
+            ConfigField::FontType => {
+                // Toggle between TTF and BDF
+                if self.config.bdf_font.is_some() {
+                    self.config.bdf_font = None;
+                } else {
+                    // Default to Fixed 9x18 when enabling BDF
+                    self.config.bdf_font = Some(BdfFont::Fixed9x18);
+                }
+                None
+            }
+            ConfigField::ScanlineMode => {
+                // Toggle between Row-based and Pixel scanlines
+                self.config.effects.scanline_mode = match self.config.effects.scanline_mode {
+                    ScanlineMode::RowBased => ScanlineMode::Pixel,
+                    ScanlineMode::Pixel => ScanlineMode::RowBased,
+                };
+                None
+            }
+            ConfigField::BeamSimulation => {
+                self.config.effects.beam_simulation_enabled = !self.config.effects.beam_simulation_enabled;
+                None
+            }
+            ConfigField::Interlace => {
+                self.config.effects.interlace_enabled = !self.config.effects.interlace_enabled;
+                None
+            }
             ConfigField::Save => Some(ConfigAction::Save),
             ConfigField::Cancel => Some(ConfigAction::Cancel),
             _ => None,
@@ -344,6 +424,13 @@ impl ConfigUI {
             ConfigField::Scanlines => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
                 effects.scanline_intensity = (effects.scanline_intensity + change).clamp(0.0, 1.0);
+            }
+            ConfigField::ScanlineMode => {
+                // Toggle between Row-based and Pixel scanlines via left/right
+                effects.scanline_mode = match effects.scanline_mode {
+                    ScanlineMode::RowBased => ScanlineMode::Pixel,
+                    ScanlineMode::Pixel => ScanlineMode::RowBased,
+                };
             }
             ConfigField::Bloom => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
@@ -404,6 +491,14 @@ impl ConfigUI {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
                 effects.focus_glow_intensity = (effects.focus_glow_intensity + change).clamp(0.0, 1.0);
             }
+            ConfigField::FontType => {
+                // Toggle between TTF and BDF via left/right arrows
+                if self.config.bdf_font.is_some() {
+                    self.config.bdf_font = None;
+                } else {
+                    self.config.bdf_font = Some(BdfFont::Fixed9x18);
+                }
+            }
             ConfigField::FontFamily => {
                 if delta > 0.0 {
                     self.config.font = self.config.font.next();
@@ -414,6 +509,15 @@ impl ConfigUI {
             ConfigField::FontSize => {
                 let change = if delta > 0.0 { 1.0 } else { -1.0 };
                 self.config.font_size = (self.config.font_size + change).clamp(8.0, 32.0);
+            }
+            ConfigField::BdfFontFamily => {
+                if let Some(ref mut bdf) = self.config.bdf_font {
+                    if delta > 0.0 {
+                        *bdf = bdf.next();
+                    } else {
+                        *bdf = bdf.prev();
+                    }
+                }
             }
             ConfigField::ColorSchemeField => {
                 let presets = ColorScheme::presets();
@@ -438,6 +542,20 @@ impl ConfigUI {
                     self.config.effects.bezel_enabled = false;
                 }
             }
+            ConfigField::AutoCopySelection => {
+                if delta > 0.0 {
+                    self.config.behavior.auto_copy_selection = true;
+                } else {
+                    self.config.behavior.auto_copy_selection = false;
+                }
+            }
+            ConfigField::ShowStartupHint => {
+                if delta > 0.0 {
+                    self.config.behavior.show_startup_hint = true;
+                } else {
+                    self.config.behavior.show_startup_hint = false;
+                }
+            }
             ConfigField::ContentScaleX => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
                 effects.content_scale_x = (effects.content_scale_x + change).clamp(0.8, 1.2);
@@ -445,6 +563,12 @@ impl ConfigUI {
             ConfigField::ContentScaleY => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
                 effects.content_scale_y = (effects.content_scale_y + change).clamp(0.8, 1.2);
+            }
+            ConfigField::BeamSimulation => {
+                effects.beam_simulation_enabled = delta > 0.0;
+            }
+            ConfigField::Interlace => {
+                effects.interlace_enabled = delta > 0.0;
             }
             _ => {}
         }
@@ -473,9 +597,10 @@ impl ConfigUI {
     /// Calculate panel height - fixed across all tabs for consistent UI
     fn panel_height(&self) -> usize {
         // Find max height across all tabs
+        // Use a "maximal" config to get the maximum possible field count
         let mut max_rows = 0;
         for tab in ConfigTab::all() {
-            let fields = ConfigField::fields_for_tab(*tab);
+            let fields = ConfigField::fields_for_tab(*tab, &self.config);
             let mut rows = 0;
             for (i, field) in fields.iter().enumerate() {
                 if i > 0 && field.has_separator_before() {
@@ -485,6 +610,9 @@ impl ConfigUI {
             }
             max_rows = max_rows.max(rows);
         }
+        // Add extra space since TTF vs BDF modes have different field counts
+        // This keeps the panel a consistent size
+        max_rows = max_rows.max(6); // Minimum height for Appearance tab
         // Add: top border (1) + tab bar (1) + padding (1) + content rows + bottom border (1)
         4 + max_rows
     }
@@ -728,15 +856,43 @@ impl ConfigUI {
         } else if field.is_selector() {
             let value_name = match field {
                 ConfigField::FontFamily => self.config.font.label().to_string(),
+                ConfigField::BdfFontFamily => self.config.bdf_font.map(|f| f.label()).unwrap_or("?").to_string(),
                 ConfigField::ColorSchemeField => self.config.color_scheme.name.clone(),
                 _ => "?".to_string(),
             };
             let prefix = if selected { "> " } else { "  " };
             format!("{}{:12} < {:^13} >", prefix, label, value_name)
         } else if field.is_toggle() {
+            // FontType is special - shows TTF/BDF instead of ON/OFF, same width as selectors
+            if field == ConfigField::FontType {
+                let type_name = if self.config.bdf_font.is_some() { "BDF" } else { "TTF" };
+                let prefix = if selected { "> " } else { "  " };
+                return format!("{}{:12} < {:^13} >", prefix, label, type_name);
+            }
+            // ScanlineMode shows Row/Pixel instead of ON/OFF
+            if field == ConfigField::ScanlineMode {
+                let mode_name = match self.config.effects.scanline_mode {
+                    ScanlineMode::RowBased => "Row",
+                    ScanlineMode::Pixel => "Pixel",
+                };
+                let prefix = if selected { "> " } else { "  " };
+                return format!("{}{:12} < {:^13} >", prefix, label, mode_name);
+            }
+            // BeamSimulation shows warning when ON
+            if field == ConfigField::BeamSimulation {
+                let prefix = if selected { "> " } else { "  " };
+                if self.config.effects.beam_simulation_enabled {
+                    return format!("{}{:12} [ON ] 240Hz+ REQ!", prefix, label);
+                } else {
+                    return format!("{}{:12} [OFF]", prefix, label);
+                }
+            }
             let is_on = match field {
                 ConfigField::PerPaneCrt => self.config.per_pane_crt,
                 ConfigField::BezelEnabled => self.config.effects.bezel_enabled,
+                ConfigField::AutoCopySelection => self.config.behavior.auto_copy_selection,
+                ConfigField::ShowStartupHint => self.config.behavior.show_startup_hint,
+                ConfigField::Interlace => self.config.effects.interlace_enabled,
                 _ => false,
             };
             let state = if is_on { "[ON ]" } else { "[OFF]" };

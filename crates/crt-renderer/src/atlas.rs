@@ -1,12 +1,27 @@
 // ABOUTME: Glyph atlas for GPU text rendering.
 // ABOUTME: Rasterizes font glyphs and packs them into a texture atlas.
+// ABOUTME: Supports both TTF (via fontdue) and BDF bitmap fonts.
 
 use fontdue::{Font, FontSettings};
 use std::collections::HashMap;
 
+use crate::bdf::BdfFont;
+
+/// The font source - either a rasterized TTF or a pixel-perfect BDF
+enum FontSource {
+    /// TTF font with fontdue rasterizer
+    Ttf {
+        font: Font,
+        font_size: f32,
+    },
+    /// BDF bitmap font (no rasterization needed)
+    Bdf {
+        font: BdfFont,
+    },
+}
+
 pub struct GlyphAtlas {
-    font: Font,
-    font_size: f32,
+    source: FontSource,
     ascent: f32,
     cell_width: f32,
     cell_height: f32,
@@ -46,6 +61,7 @@ pub enum AtlasError {
 }
 
 impl GlyphAtlas {
+    /// Create a new atlas from TTF font data
     pub fn new(font_data: &[u8], font_size: f32) -> Result<Self, AtlasError> {
         let font = Font::from_bytes(font_data, FontSettings::default())
             .map_err(|e| AtlasError::FontLoadError(e.to_string()))?;
@@ -70,8 +86,7 @@ impl GlyphAtlas {
         let atlas_data = vec![0u8; (atlas_width * atlas_height) as usize];
 
         Ok(Self {
-            font,
-            font_size,
+            source: FontSource::Ttf { font, font_size },
             ascent: line_metrics.ascent,
             cell_width,
             cell_height,
@@ -89,26 +104,77 @@ impl GlyphAtlas {
         })
     }
 
+    /// Create a new atlas from BDF font data
+    pub fn from_bdf(bdf_data: &[u8]) -> Result<Self, AtlasError> {
+        let font = BdfFont::parse(bdf_data)
+            .map_err(|e| AtlasError::FontLoadError(e.to_string()))?;
+
+        let cell_width = font.cell_width() as f32;
+        let cell_height = font.cell_height() as f32;
+        let ascent = font.ascent as f32;
+
+        // BDF fonts typically have limited character sets, so use a smaller default font size
+        // for fallback scaling
+        let fallback_font_size = cell_height;
+
+        let atlas_width = 1024;
+        let atlas_height = 1024;
+        let atlas_data = vec![0u8; (atlas_width * atlas_height) as usize];
+
+        tracing::info!(
+            "Loaded BDF font: {}x{} cell, ascent={}, descent={}, {} glyphs",
+            cell_width, cell_height, font.ascent, font.descent, font.glyphs.len()
+        );
+
+        Ok(Self {
+            source: FontSource::Bdf { font },
+            ascent,
+            cell_width,
+            cell_height,
+            fallback_font: None,
+            fallback_font_size,
+            emoji_font: None,
+            emoji_font_size: fallback_font_size,
+            glyphs: HashMap::new(),
+            atlas_data,
+            atlas_width,
+            atlas_height,
+            next_x: 0,
+            next_y: 0,
+            row_height: 0,
+        })
+    }
+
+    /// Get the font size (for TTF) or cell height (for BDF)
+    fn primary_font_size(&self) -> f32 {
+        match &self.source {
+            FontSource::Ttf { font_size, .. } => *font_size,
+            FontSource::Bdf { .. } => self.cell_height,
+        }
+    }
+
     /// Set a fallback font for characters missing from the primary font.
     /// The fallback font size is calculated to match the primary font's cell height.
     pub fn set_fallback(&mut self, fallback_data: &[u8]) -> Result<(), AtlasError> {
         let fallback = Font::from_bytes(fallback_data, FontSettings::default())
             .map_err(|e| AtlasError::FontLoadError(format!("fallback: {}", e)))?;
 
+        let base_size = self.primary_font_size();
+
         // Calculate font size for fallback to match primary cell height
         let fallback_line_metrics = fallback
-            .horizontal_line_metrics(self.font_size)
+            .horizontal_line_metrics(base_size)
             .unwrap_or(fontdue::LineMetrics {
-                ascent: self.font_size * 0.8,
-                descent: self.font_size * -0.2,
+                ascent: base_size * 0.8,
+                descent: base_size * -0.2,
                 line_gap: 0.0,
-                new_line_size: self.font_size,
+                new_line_size: base_size,
             });
 
         // Scale fallback to match primary cell height
         let fallback_natural_height = fallback_line_metrics.ascent - fallback_line_metrics.descent;
         let scale = self.cell_height / fallback_natural_height;
-        let fallback_font_size = self.font_size * scale;
+        let fallback_font_size = base_size * scale;
 
         self.fallback_font = Some(fallback);
         self.fallback_font_size = fallback_font_size;
@@ -128,19 +194,21 @@ impl GlyphAtlas {
         let emoji = Font::from_bytes(emoji_data, FontSettings::default())
             .map_err(|e| AtlasError::FontLoadError(format!("emoji: {}", e)))?;
 
+        let base_size = self.primary_font_size();
+
         // Calculate font size for emoji to match primary cell height
         let emoji_line_metrics = emoji
-            .horizontal_line_metrics(self.font_size)
+            .horizontal_line_metrics(base_size)
             .unwrap_or(fontdue::LineMetrics {
-                ascent: self.font_size * 0.8,
-                descent: self.font_size * -0.2,
+                ascent: base_size * 0.8,
+                descent: base_size * -0.2,
                 line_gap: 0.0,
-                new_line_size: self.font_size,
+                new_line_size: base_size,
             });
 
         let emoji_natural_height = emoji_line_metrics.ascent - emoji_line_metrics.descent;
         let scale = self.cell_height / emoji_natural_height;
-        let emoji_font_size = self.font_size * scale;
+        let emoji_font_size = base_size * scale;
 
         self.emoji_font = Some(emoji);
         self.emoji_font_size = emoji_font_size;
@@ -159,7 +227,10 @@ impl GlyphAtlas {
 
     /// Check if primary font has a glyph (not .notdef)
     fn primary_has_glyph(&self, c: char) -> bool {
-        self.font.lookup_glyph_index(c) != 0
+        match &self.source {
+            FontSource::Ttf { font, .. } => font.lookup_glyph_index(c) != 0,
+            FontSource::Bdf { font } => font.get_char(c).is_some(),
+        }
     }
 
     /// Check if fallback font has a glyph (not .notdef)
@@ -190,52 +261,84 @@ impl GlyphAtlas {
         let fallback_has = self.fallback_has_glyph(c);
         let emoji_has = self.emoji_has_glyph(c);
 
-        let (metrics, bitmap, advance_override, source) = if primary_has {
-            let (m, b) = self.font.rasterize(c, self.font_size);
-            // If primary returned empty bitmap, try fallbacks
-            if (m.width == 0 || m.height == 0) && c != ' ' {
-                if fallback_has {
-                    let fallback = self.fallback_font.as_ref().unwrap();
-                    let (fm, fb) = fallback.rasterize(c, self.fallback_font_size);
-                    (fm, fb, Some(self.cell_width), "fallback (primary empty)")
-                } else if emoji_has {
-                    let emoji = self.emoji_font.as_ref().unwrap();
-                    let (em, eb) = emoji.rasterize(c, self.emoji_font_size);
-                    (em, eb, Some(self.cell_width), "emoji (primary empty)")
-                } else {
-                    (m, b, None, "primary")
+        // Rasterize glyph from appropriate font
+        // Returns (width, height, xmin, ymin, advance, bitmap, source_name)
+        let (width, height, xmin, ymin, advance, bitmap, source_name): (usize, usize, i32, i32, f32, Vec<u8>, &str) =
+            if primary_has {
+                match &self.source {
+                    FontSource::Ttf { font, font_size } => {
+                        let (m, b) = font.rasterize(c, *font_size);
+                        // If primary returned empty bitmap, try fallbacks
+                        if (m.width == 0 || m.height == 0) && c != ' ' {
+                            if fallback_has {
+                                let fallback = self.fallback_font.as_ref().unwrap();
+                                let (fm, fb) = fallback.rasterize(c, self.fallback_font_size);
+                                (fm.width, fm.height, fm.xmin, fm.ymin, self.cell_width, fb, "fallback (primary empty)")
+                            } else if emoji_has {
+                                let emoji = self.emoji_font.as_ref().unwrap();
+                                let (em, eb) = emoji.rasterize(c, self.emoji_font_size);
+                                (em.width, em.height, em.xmin, em.ymin, self.cell_width, eb, "emoji (primary empty)")
+                            } else {
+                                (m.width, m.height, m.xmin, m.ymin, m.advance_width, b, "primary")
+                            }
+                        } else {
+                            (m.width, m.height, m.xmin, m.ymin, m.advance_width, b, "primary")
+                        }
+                    }
+                    FontSource::Bdf { font } => {
+                        let glyph = font.get_char(c).unwrap();
+                        let bitmap = glyph.render();
+                        // BDF offset_y is from baseline (positive = above), fontdue ymin is from baseline (positive = above)
+                        (glyph.width as usize, glyph.height as usize,
+                         glyph.offset_x, glyph.offset_y,
+                         glyph.dwidth_x as f32, bitmap, "primary (bdf)")
+                    }
                 }
+            } else if fallback_has {
+                // Primary doesn't have it, try fallback
+                let fallback = self.fallback_font.as_ref().unwrap();
+                let (m, b) = fallback.rasterize(c, self.fallback_font_size);
+                (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "fallback")
+            } else if emoji_has {
+                // Try emoji font
+                let emoji = self.emoji_font.as_ref().unwrap();
+                let (m, b) = emoji.rasterize(c, self.emoji_font_size);
+                (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "emoji")
             } else {
-                (m, b, None, "primary")
-            }
-        } else if fallback_has {
-            // Primary doesn't have it, try fallback
-            let fallback = self.fallback_font.as_ref().unwrap();
-            let (m, b) = fallback.rasterize(c, self.fallback_font_size);
-            (m, b, Some(self.cell_width), "fallback")
-        } else if emoji_has {
-            // Try emoji font
-            let emoji = self.emoji_font.as_ref().unwrap();
-            let (m, b) = emoji.rasterize(c, self.emoji_font_size);
-            (m, b, Some(self.cell_width), "emoji")
-        } else {
-            // No font has this glyph - use '?' from primary
-            let (m, b) = self.font.rasterize('?', self.font_size);
-            (m, b, None, "? (no font has glyph)")
-        };
+                // No font has this glyph - use '?' from primary or fallback
+                match &self.source {
+                    FontSource::Ttf { font, font_size } => {
+                        let (m, b) = font.rasterize('?', *font_size);
+                        (m.width, m.height, m.xmin, m.ymin, m.advance_width, b, "? (no font has glyph)")
+                    }
+                    FontSource::Bdf { font } => {
+                        // Try to get '?' from BDF, otherwise use fallback
+                        if let Some(glyph) = font.get_char('?') {
+                            let bitmap = glyph.render();
+                            (glyph.width as usize, glyph.height as usize,
+                             glyph.offset_x, glyph.offset_y,
+                             glyph.dwidth_x as f32, bitmap, "? (bdf)")
+                        } else if let Some(fallback) = &self.fallback_font {
+                            let (m, b) = fallback.rasterize('?', self.fallback_font_size);
+                            (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "? (fallback)")
+                        } else {
+                            // Return empty glyph
+                            (0, 0, 0, 0, self.cell_width, vec![], "? (empty)")
+                        }
+                    }
+                }
+            };
 
         // Log non-ASCII glyph resolution (only on first rasterization, not cached)
         if !c.is_ascii() {
             tracing::debug!(
-                "Glyph {:?} (U+{:04X}): source={}, size={}x{}, offset=({:.1},{:.1}), cell={:.1}x{:.1}",
-                c, c as u32, source, metrics.width, metrics.height,
-                metrics.xmin, metrics.ymin, self.cell_width, self.cell_height
+                "Glyph {:?} (U+{:04X}): source={}, size={}x{}, offset=({},{}), cell={:.1}x{:.1}",
+                c, c as u32, source_name, width, height,
+                xmin, ymin, self.cell_width, self.cell_height
             );
         }
 
-        let advance = advance_override.unwrap_or(metrics.advance_width);
-
-        if metrics.width == 0 || metrics.height == 0 {
+        if width == 0 || height == 0 {
             // Space or empty glyph
             let info = GlyphInfo {
                 uv_x: 0.0,
@@ -245,29 +348,29 @@ impl GlyphAtlas {
                 width: 0,
                 height: 0,
                 advance,
-                offset_x: metrics.xmin as f32,
-                offset_y: metrics.ymin as f32,
+                offset_x: xmin as f32,
+                offset_y: ymin as f32,
             };
             self.glyphs.insert(c, info);
             return Ok(info);
         }
 
         // Check if we need to wrap to next row
-        if self.next_x + metrics.width as u32 > self.atlas_width {
+        if self.next_x + width as u32 > self.atlas_width {
             self.next_x = 0;
             self.next_y += self.row_height + 1;
             self.row_height = 0;
         }
 
         // Check if atlas is full
-        if self.next_y + metrics.height as u32 > self.atlas_height {
+        if self.next_y + height as u32 > self.atlas_height {
             return Err(AtlasError::AtlasFull);
         }
 
         // Copy glyph bitmap to atlas
-        for y in 0..metrics.height {
-            for x in 0..metrics.width {
-                let src_idx = y * metrics.width + x;
+        for y in 0..height {
+            for x in 0..width {
+                let src_idx = y * width + x;
                 let dst_x = self.next_x + x as u32;
                 let dst_y = self.next_y + y as u32;
                 let dst_idx = (dst_y * self.atlas_width + dst_x) as usize;
@@ -278,17 +381,17 @@ impl GlyphAtlas {
         let info = GlyphInfo {
             uv_x: self.next_x as f32 / self.atlas_width as f32,
             uv_y: self.next_y as f32 / self.atlas_height as f32,
-            uv_width: metrics.width as f32 / self.atlas_width as f32,
-            uv_height: metrics.height as f32 / self.atlas_height as f32,
-            width: metrics.width as u32,
-            height: metrics.height as u32,
+            uv_width: width as f32 / self.atlas_width as f32,
+            uv_height: height as f32 / self.atlas_height as f32,
+            width: width as u32,
+            height: height as u32,
             advance,
-            offset_x: metrics.xmin as f32,
-            offset_y: metrics.ymin as f32,
+            offset_x: xmin as f32,
+            offset_y: ymin as f32,
         };
 
-        self.next_x += metrics.width as u32 + 1;
-        self.row_height = self.row_height.max(metrics.height as u32);
+        self.next_x += width as u32 + 1;
+        self.row_height = self.row_height.max(height as u32);
 
         self.glyphs.insert(c, info);
         Ok(info)
@@ -303,7 +406,6 @@ impl GlyphAtlas {
     }
 
     pub fn cell_size(&self) -> (f32, f32) {
-        let metrics = self.font.metrics('M', self.font_size);
-        (metrics.advance_width, self.font_size)
+        (self.cell_width, self.cell_height)
     }
 }

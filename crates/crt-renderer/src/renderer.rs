@@ -38,6 +38,7 @@ pub struct RenderCell {
 pub struct EffectParams {
     pub curvature: f32,
     pub scanline_intensity: f32,
+    pub scanline_mode: u32,  // 0 = row-based, 1 = pixel-level
     pub bloom: f32,
     pub burn_in: f32,
     pub focus_glow_radius: f32,
@@ -51,6 +52,11 @@ pub struct EffectParams {
     pub content_scale_x: f32,
     pub content_scale_y: f32,
     pub glow_color: [f32; 4],
+    // Beam sweep / interlacing simulation
+    pub interlace_enabled: bool,
+    pub beam_speed_divisor: u32,  // How many frames per beam slice (e.g., 4 for 240Hz -> 60 fields/sec)
+    pub beam_paused: bool,        // Freeze beam position for debugging
+    pub beam_step_count: u32,     // Advance N frames when paused (0 = no step)
 }
 
 pub struct Renderer {
@@ -62,12 +68,14 @@ pub struct Renderer {
     font_color: [f32; 4],
     current_font: Font,
     current_font_size: f32,
+    current_bdf_font: Option<crt_core::BdfFont>,
     crt_pipeline: CrtPipeline,
     burnin_pipeline: BurnInPipeline,
     offscreen_texture: wgpu::Texture,
     offscreen_view: wgpu::TextureView,
     crt_bind_group: wgpu::BindGroup,
     last_frame: Instant,
+    frame_count: u64,      // For beam sweep / interlacing timing
 }
 
 impl Renderer {
@@ -142,18 +150,23 @@ impl Renderer {
             font_color,
             current_font: font,
             current_font_size: font_size,
+            current_bdf_font: None,
             crt_pipeline,
             burnin_pipeline,
             offscreen_texture,
             offscreen_view,
             crt_bind_group,
             last_frame: Instant::now(),
+            frame_count: 0,
         })
     }
 
     /// Change the font and/or size. Recreates the atlas and text pipeline.
     pub fn set_font(&mut self, font: Font, font_size: f32) -> Result<(), RenderError> {
-        if font == self.current_font && (font_size - self.current_font_size).abs() < 0.1 {
+        if self.current_bdf_font.is_none()
+            && font == self.current_font
+            && (font_size - self.current_font_size).abs() < 0.1
+        {
             return Ok(()); // No change needed
         }
 
@@ -200,6 +213,66 @@ impl Renderer {
         self.text_pipeline = text_pipeline;
         self.current_font = font;
         self.current_font_size = font_size;
+        self.current_bdf_font = None; // Switching to TTF clears BDF
+
+        Ok(())
+    }
+
+    /// Change to a BDF bitmap font. Recreates the atlas and text pipeline.
+    /// BDF fonts use their native pixel size - no scaling is applied.
+    pub fn set_bdf_font(&mut self, bdf_font: crt_core::BdfFont) -> Result<(), RenderError> {
+        // Check if already using this BDF font
+        if self.current_bdf_font == Some(bdf_font) {
+            return Ok(()); // No change needed
+        }
+
+        // Create new atlas from BDF
+        let bdf_data = crate::fonts::get_bdf_font_data(bdf_font);
+        let mut atlas = GlyphAtlas::from_bdf(bdf_data)?;
+
+        // Set up fallback fonts for characters missing from BDF
+        if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
+            tracing::warn!("Failed to load fallback font: {}", e);
+        }
+        if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
+            tracing::warn!("Failed to load emoji fallback font: {}", e);
+        }
+
+        // Pre-populate common ASCII characters
+        for c in ' '..='~' {
+            let _ = atlas.get_glyph(c);
+        }
+        // Block characters for cursor
+        let _ = atlas.get_glyph('█');
+        let _ = atlas.get_glyph('▌');
+        let _ = atlas.get_glyph('▐');
+        let _ = atlas.get_glyph('▀');
+        let _ = atlas.get_glyph('▄');
+        // Box drawing for separators
+        let _ = atlas.get_glyph('│');
+        let _ = atlas.get_glyph('─');
+        // Corner brackets for focus indicator
+        let _ = atlas.get_glyph('┌');
+        let _ = atlas.get_glyph('┐');
+        let _ = atlas.get_glyph('└');
+        let _ = atlas.get_glyph('┘');
+
+        // Get BDF cell size for tracking
+        let (cell_w, cell_h) = atlas.cell_size();
+        tracing::info!("BDF font loaded: cell size = {}x{}", cell_w, cell_h);
+
+        // Recreate text pipeline with new atlas
+        let text_pipeline = TextPipeline::new(
+            &self.gpu.device,
+            &self.gpu.queue,
+            self.gpu.config.format,
+            &atlas,
+        );
+
+        self.atlas = atlas;
+        self.text_pipeline = text_pipeline;
+        self.current_font_size = cell_h;
+        self.current_bdf_font = Some(bdf_font);
 
         Ok(())
     }
@@ -248,6 +321,11 @@ impl Renderer {
 
     pub fn cell_size(&self) -> (f32, f32) {
         self.atlas.cell_size()
+    }
+
+    /// Reset CRT time to replay the power-on animation
+    pub fn replay_power_on(&mut self) {
+        self.crt_pipeline.reset_time();
     }
 
     /// Calculate how many columns and rows fit in the current window
@@ -319,6 +397,7 @@ impl Renderer {
             cell_height,
             0.03, // default curvature
             0.3,  // default scanlines
+            0,    // row-based scanlines (default)
             0.3,  // default bloom
             0.05, // default glow radius
             0.06, // default glow width
@@ -400,6 +479,7 @@ impl Renderer {
     /// pane_rects_normalized are (x, y, width, height) in normalized coords (0-1) for CRT
     /// per_pane_crt enables per-pane CRT effects
     /// debug_grid draws 1px lines at cell boundaries for debugging alignment
+    /// debug_lines are custom lines for debugging (x1, y1, x2, y2, thickness, color)
     /// focused_pane_index is the index of the focused pane in pane_rects_normalized (-1 if single pane)
     /// effects contains the CRT effect parameters from config
     pub fn render_panes(
@@ -412,6 +492,7 @@ impl Renderer {
         pane_rects_normalized: &[(f32, f32, f32, f32)],
         per_pane_crt: bool,
         debug_grid: bool,
+        debug_lines: &[(f32, f32, f32, f32, f32, [f32; 4])],
         focused_pane_index: i32,
         effects: EffectParams,
     ) -> Result<(), RenderError> {
@@ -547,6 +628,11 @@ impl Renderer {
             }
         }
 
+        // Add custom debug lines
+        for &(x1, y1, x2, y2, thickness, color) in debug_lines {
+            all_lines.push((x1, y1, x2, y2, thickness, color));
+        }
+
         // Draw scrollbars
         // Each scrollbar is (x, y, height, thumb_start, thumb_height, opacity)
         let scrollbar_width = 4.0;
@@ -585,6 +671,7 @@ impl Renderer {
             cell_height,
             effects.curvature,
             effects.scanline_intensity,
+            effects.scanline_mode,
             effects.bloom,
             effects.focus_glow_radius,
             effects.focus_glow_width,
@@ -601,8 +688,75 @@ impl Renderer {
 
         // Update burn-in uniforms
         // Map burn_in (0-1 persistence strength) to decay rate (0 = no persistence, 0.95 = max)
-        let decay = effects.burn_in * 0.95;
-        self.burnin_pipeline.update(&self.gpu.queue, decay, 1.0);
+        // Adjust for frame rate: decay is calibrated for 60fps, so we need decay^(dt * 60)
+        // This ensures consistent burn-in persistence regardless of frame rate
+        let base_decay = effects.burn_in * 0.95;
+        let decay = base_decay.powf(dt * 60.0);
+
+        // When paused, freeze decay (set to 1.0 = no change) unless stepping
+        let effective_decay = if effects.beam_paused && effects.beam_step_count == 0 {
+            1.0  // Freeze - no decay
+        } else {
+            decay
+        };
+
+        // Calculate beam position for sweep simulation
+        // beam_speed_divisor = frames per beam slice (e.g., 4 for 240Hz -> 60 fields/sec)
+        // Uses beam_phase as a drift offset to prevent fixed band positions
+        // Beam simulation runs when beam_speed_divisor > 0, interlacing is a separate option
+        let (beam_y_start, beam_y_end, current_field) = if effects.beam_speed_divisor > 0 {
+            let slices_per_field = effects.beam_speed_divisor as u64;
+            let slice_height = 1.0 / slices_per_field as f64;
+
+            // Base position from integer slice counting (ensures full coverage, no gaps)
+            // With interlacing: cycle is 2x longer (odd field, then even field)
+            // Without interlacing: just cycle through slices
+            let cycle_length = if effects.interlace_enabled { slices_per_field * 2 } else { slices_per_field };
+            let frame_within_cycle = self.frame_count % cycle_length;
+            let current_field = if effects.interlace_enabled {
+                (frame_within_cycle / slices_per_field) as u32
+            } else {
+                0  // Always field 0 when not interlacing (paints all lines)
+            };
+            let slice_within_field = frame_within_cycle % slices_per_field;
+            let base_start = slice_within_field as f64 * slice_height;
+
+            // Oscillating drift offset - shifts bands back and forth rather than constant scroll
+            // Multiple sine waves at different frequencies create irregular, less noticeable pattern
+            let t = self.frame_count as f64;
+            let drift_offset = 0.05 * (t * 0.007).sin()      // slow primary oscillation
+                             + 0.03 * (t * 0.023).sin()      // medium secondary
+                             + 0.02 * (t * 0.047).sin();     // faster tertiary
+            // drift_offset ranges roughly ±0.10, center around 0.5 to keep positive
+            let drift_offset = (drift_offset + 0.5).rem_euclid(1.0);
+
+            // Combine base position with drift (wrapping at 1.0)
+            let beam_y_start = ((base_start + drift_offset) % 1.0) as f32;
+            let beam_y_end = beam_y_start + slice_height as f32;
+
+            (beam_y_start, beam_y_end, current_field)
+        } else {
+            // No beam simulation - paint entire screen
+            (0.0, 1.0, 0)
+        };
+
+        // Keep frame_count for other timing needs
+        if !effects.beam_paused {
+            self.frame_count += 1;
+        } else if effects.beam_step_count > 0 {
+            self.frame_count += effects.beam_step_count as u64;
+        }
+
+        self.burnin_pipeline.update(
+            &self.gpu.queue,
+            effective_decay,
+            1.0,
+            beam_y_start,
+            beam_y_end,
+            current_field,
+            effects.interlace_enabled,
+            height as f32,
+        );
 
         // Prepare burn-in bind groups (needs current frame texture)
         self.burnin_pipeline.prepare_bind_groups(&self.gpu.device, &self.offscreen_view);

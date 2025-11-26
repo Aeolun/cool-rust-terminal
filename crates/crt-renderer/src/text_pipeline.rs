@@ -211,7 +211,7 @@ impl TextPipeline {
         });
 
         // Pre-allocate buffers for up to 10000 characters
-        let max_chars = 10000;
+        let max_chars = 50000; // Support large terminals with many characters
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Text Vertex Buffer"),
             size: (max_chars * 4 * std::mem::size_of::<Vertex>()) as u64,

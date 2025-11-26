@@ -274,17 +274,160 @@ impl Font {
     }
 }
 
+/// Bundled BDF (bitmap) font options - pixel-perfect, no scaling
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BdfFont {
+    /// X11 Fixed 6x13 - classic small terminal font
+    Fixed6x13,
+    /// X11 Fixed 7x13 - slightly wider
+    Fixed7x13,
+    /// X11 Fixed 7x14 - medium height
+    Fixed7x14,
+    /// X11 Fixed 8x13 - wider
+    Fixed8x13,
+    /// X11 Fixed 9x15 - medium
+    Fixed9x15,
+    /// X11 Fixed 9x18 - medium-large
+    Fixed9x18,
+    /// X11 Fixed 10x20 - large
+    Fixed10x20,
+    /// Amstrad CPC - 8-bit home computer font
+    AmstradCpc,
+    /// ProFont 12 - small programming font
+    ProFont12,
+    /// ProFont 17 - medium programming font
+    ProFont17,
+    /// Courier Regular 12
+    Courier12,
+    /// Courier Bold 14
+    CourierBold14,
+}
+
+impl BdfFont {
+    pub fn all() -> &'static [BdfFont] {
+        &[
+            BdfFont::Fixed6x13,
+            BdfFont::Fixed7x13,
+            BdfFont::Fixed7x14,
+            BdfFont::Fixed8x13,
+            BdfFont::Fixed9x15,
+            BdfFont::Fixed9x18,
+            BdfFont::Fixed10x20,
+            BdfFont::AmstradCpc,
+            BdfFont::ProFont12,
+            BdfFont::ProFont17,
+            BdfFont::Courier12,
+            BdfFont::CourierBold14,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            BdfFont::Fixed6x13 => "Fixed 6x13",
+            BdfFont::Fixed7x13 => "Fixed 7x13",
+            BdfFont::Fixed7x14 => "Fixed 7x14",
+            BdfFont::Fixed8x13 => "Fixed 8x13",
+            BdfFont::Fixed9x15 => "Fixed 9x15",
+            BdfFont::Fixed9x18 => "Fixed 9x18",
+            BdfFont::Fixed10x20 => "Fixed 10x20",
+            BdfFont::AmstradCpc => "Amstrad CPC",
+            BdfFont::ProFont12 => "ProFont 12",
+            BdfFont::ProFont17 => "ProFont 17",
+            BdfFont::Courier12 => "Courier 12",
+            BdfFont::CourierBold14 => "Courier Bold 14",
+        }
+    }
+
+    /// Get the cell size for this font (width x height in pixels)
+    pub fn cell_size(&self) -> (u32, u32) {
+        match self {
+            BdfFont::Fixed6x13 => (6, 13),
+            BdfFont::Fixed7x13 => (7, 13),
+            BdfFont::Fixed7x14 => (7, 14),
+            BdfFont::Fixed8x13 => (8, 13),
+            BdfFont::Fixed9x15 => (9, 15),
+            BdfFont::Fixed9x18 => (9, 18),
+            BdfFont::Fixed10x20 => (10, 20),
+            BdfFont::AmstradCpc => (8, 8),
+            BdfFont::ProFont12 => (6, 12),
+            BdfFont::ProFont17 => (9, 17),
+            BdfFont::Courier12 => (8, 12),
+            BdfFont::CourierBold14 => (9, 14),
+        }
+    }
+
+    pub fn next(&self) -> BdfFont {
+        let all = BdfFont::all();
+        let idx = all.iter().position(|f| f == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    pub fn prev(&self) -> BdfFont {
+        let all = BdfFont::all();
+        let idx = all.iter().position(|f| f == self).unwrap_or(0);
+        if idx == 0 {
+            all[all.len() - 1]
+        } else {
+            all[idx - 1]
+        }
+    }
+
+    /// Get the BDF filename
+    pub fn filename(&self) -> &'static str {
+        match self {
+            BdfFont::Fixed6x13 => "6x13.bdf",
+            BdfFont::Fixed7x13 => "7x13.bdf",
+            BdfFont::Fixed7x14 => "7x14.bdf",
+            BdfFont::Fixed8x13 => "8x13.bdf",
+            BdfFont::Fixed9x15 => "9x15.bdf",
+            BdfFont::Fixed9x18 => "9x18.bdf",
+            BdfFont::Fixed10x20 => "10x20.bdf",
+            BdfFont::AmstradCpc => "amstrad_cpc_extended.bdf",
+            BdfFont::ProFont12 => "profont12.bdf",
+            BdfFont::ProFont17 => "profont17.bdf",
+            BdfFont::Courier12 => "courR12.bdf",
+            BdfFont::CourierBold14 => "courB14.bdf",
+        }
+    }
+}
+
+/// Behavior settings (non-visual preferences)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BehaviorSettings {
+    /// Automatically copy selected text to clipboard on mouse release
+    pub auto_copy_selection: bool,
+    /// Show keyboard shortcut hints on startup
+    pub show_startup_hint: bool,
+}
+
+impl Default for BehaviorSettings {
+    fn default() -> Self {
+        Self {
+            auto_copy_selection: false,
+            show_startup_hint: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Visual effect settings
     pub effects: EffectSettings,
 
-    /// Selected font
+    /// Behavior settings
+    pub behavior: BehaviorSettings,
+
+    /// Selected TTF font (used when bdf_font is None)
     pub font: Font,
 
-    /// Font size in pixels
+    /// Font size in pixels (used for TTF fonts; BDF fonts use their native size)
     pub font_size: f32,
+
+    /// Optional BDF bitmap font (overrides TTF `font` if set)
+    pub bdf_font: Option<BdfFont>,
 
     /// Color scheme (16 ANSI colors + fg/bg)
     pub color_scheme: ColorScheme,
@@ -301,8 +444,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             effects: EffectSettings::default(),
+            behavior: BehaviorSettings::default(),
             font: Font::default(),
             font_size: 18.0,
+            bdf_font: None,
             color_scheme: ColorScheme::default(),
             window_width: 1200,
             window_height: 800,

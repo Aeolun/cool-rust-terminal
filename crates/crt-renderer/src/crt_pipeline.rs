@@ -40,7 +40,7 @@ struct CrtUniforms {
     vignette: f32,
     // Bezel settings
     bezel_enabled: u32,
-    _pad0: u32,                 // Padding for vec2 alignment in WGSL
+    scanline_mode: u32,         // 0 = row-based, 1 = pixel-level
     bezel_size: [f32; 2],       // Bezel image size (width, height)
     // 9-patch borders: top, right, bottom, left (in pixels)
     bezel_border_top: f32,
@@ -139,7 +139,7 @@ impl CrtPipeline {
                 brightness: 1.0,
                 vignette: 0.25,
                 bezel_enabled: 0,
-                _pad0: 0,
+                scanline_mode: 0,  // Row-based by default
                 bezel_size: [bezel_dimensions.0 as f32, bezel_dimensions.1 as f32],
                 bezel_border_top: 52.0,
                 bezel_border_right: 52.0,
@@ -306,6 +306,7 @@ impl CrtPipeline {
         cell_height: f32,
         curvature: f32,
         scanline_intensity: f32,
+        scanline_mode: u32,
         bloom_intensity: f32,
         focus_glow_radius: f32,
         focus_glow_width: f32,
@@ -348,7 +349,7 @@ impl CrtPipeline {
                 brightness,
                 vignette,
                 bezel_enabled: if bezel_enabled { 1 } else { 0 },
-                _pad0: 0,
+                scanline_mode,
                 bezel_size: [715.0, 600.0],
                 bezel_border_top: 52.0,
                 bezel_border_right: 52.0,
@@ -362,6 +363,11 @@ impl CrtPipeline {
                 panes,
             }]),
         );
+    }
+
+    /// Reset the time to replay the power-on animation
+    pub fn reset_time(&mut self) {
+        self.time = 0.0;
     }
 
     pub fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, bind_group: &'a wgpu::BindGroup) {

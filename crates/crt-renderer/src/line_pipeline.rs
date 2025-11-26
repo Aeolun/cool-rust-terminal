@@ -123,7 +123,7 @@ impl LinePipeline {
         });
 
         // Pre-allocate for up to 1000 lines (each line = 2 triangles = 4 vertices, 6 indices)
-        let max_lines = 5000;
+        let max_lines = 50000; // Support large terminals and many cell backgrounds
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Line Vertex Buffer"),
             size: (max_lines * 4 * std::mem::size_of::<LineVertex>()) as u64,
