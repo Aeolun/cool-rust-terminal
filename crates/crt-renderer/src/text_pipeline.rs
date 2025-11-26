@@ -43,6 +43,9 @@ pub struct TextPipeline {
     uniform_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
+    atlas_texture: wgpu::Texture,
+    atlas_width: u32,
+    atlas_height: u32,
     max_chars: usize,
     num_indices: u32,
 }
@@ -229,6 +232,9 @@ impl TextPipeline {
             uniform_buffer,
             vertex_buffer,
             index_buffer,
+            atlas_texture,
+            atlas_width,
+            atlas_height,
             max_chars,
             num_indices: 0,
         }
@@ -251,6 +257,27 @@ impl TextPipeline {
         atlas: &mut GlyphAtlas,
         chars: &[(char, f32, f32, [f32; 4])], // char, x, baseline_y, color
     ) {
+        // Update atlas texture with latest glyph data (new glyphs may have been added)
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &self.atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            atlas.atlas_data(),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(self.atlas_width),
+                rows_per_image: Some(self.atlas_height),
+            },
+            wgpu::Extent3d {
+                width: self.atlas_width,
+                height: self.atlas_height,
+                depth_or_array_layers: 1,
+            },
+        );
+
         let mut vertices = Vec::with_capacity(chars.len() * 4);
         let mut indices = Vec::with_capacity(chars.len() * 6);
 
@@ -265,12 +292,13 @@ impl TextPipeline {
             }
 
             // offset_x is xmin (horizontal bearing)
-            // offset_y is ymin - distance from baseline to top of glyph (negative = above baseline)
-            // In screen coords (Y down), glyph top is at baseline_y - (height - ymin)
+            // offset_y is ymin - distance from baseline to bottom of glyph
+            // In screen coords (Y down), glyph top is at baseline_y - (height + ymin)
             let x0 = x + glyph.offset_x;
             let y0 = baseline_y - glyph.height as f32 - glyph.offset_y;
             let x1 = x0 + glyph.width as f32;
             let y1 = y0 + glyph.height as f32;
+
 
             let u0 = glyph.uv_x;
             let v0 = glyph.uv_y;

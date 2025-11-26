@@ -231,10 +231,9 @@ impl ConfigUI {
         [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]]
     }
 
-    /// Get the background color with some transparency for overlay
+    /// Get the background color (transparent - let CRT show through)
     fn bg_color(&self) -> [f32; 4] {
-        let bg = self.config.color_scheme.background;
-        [bg[0], bg[1], bg[2], 0.95]
+        [0.0, 0.0, 0.0, 0.0]
     }
 
     /// Get a slightly lighter background for selection highlight
@@ -512,11 +511,11 @@ impl ConfigUI {
                     && row < start_row + panel_height;
 
                 if !in_panel {
-                    // Outside panel - dim/darken
+                    // Outside panel - transparent (no background drawn)
                     cells.push(RenderCell {
                         c: ' ',
                         fg: [0.0; 4],
-                        bg: [0.0, 0.0, 0.0, 0.7],
+                        bg: [0.0, 0.0, 0.0, 0.0],
                     });
                     continue;
                 }
@@ -590,6 +589,10 @@ impl ConfigUI {
         }
 
         // Content area (row 3+)
+        // Left inner margin (col 1) - return space
+        if col == 1 {
+            return (' ', fg, bg);
+        }
         let content_col = col - 2;
         let content_row = row - 3;
 

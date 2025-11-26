@@ -18,6 +18,10 @@ static PRO_FONT: &[u8] = include_bytes!("../../../assets/fonts/modern-pro-font-w
 static HERMIT: &[u8] = include_bytes!("../../../assets/fonts/modern-hermit/Hermit-medium.otf");
 static INCONSOLATA: &[u8] = include_bytes!("../../../assets/fonts/modern-inconsolata/Inconsolata.otf");
 
+// Fallback fonts with good unicode coverage
+static FALLBACK_HACK: &[u8] = include_bytes!("../../../assets/fonts/fallback-hack/Hack-Regular.ttf");
+static FALLBACK_EMOJI: &[u8] = include_bytes!("../../../assets/fonts/fallback-emoji/NotoEmoji-VariableFont_wght.ttf");
+
 /// Get the embedded font data for a given font
 pub fn get_font_data(font: Font) -> &'static [u8] {
     match font {
@@ -35,4 +39,16 @@ pub fn get_font_data(font: Font) -> &'static [u8] {
         Font::Hermit => HERMIT,
         Font::Inconsolata => INCONSOLATA,
     }
+}
+
+/// Get fallback font data for characters missing from the primary font.
+/// Returns the rectangular (tall) fallback font - Hack.
+pub fn get_fallback_font_data() -> &'static [u8] {
+    FALLBACK_HACK
+}
+
+/// Get emoji fallback font data for emoji characters.
+/// Returns Noto Emoji (monochrome).
+pub fn get_emoji_fallback_font_data() -> &'static [u8] {
+    FALLBACK_EMOJI
 }

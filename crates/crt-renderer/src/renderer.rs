@@ -10,7 +10,7 @@ use crt_core::Font;
 use crate::atlas::GlyphAtlas;
 use crate::burnin_pipeline::BurnInPipeline;
 use crate::crt_pipeline::CrtPipeline;
-use crate::fonts::get_font_data;
+use crate::fonts::{get_emoji_fallback_font_data, get_fallback_font_data, get_font_data};
 use crate::gpu::GpuState;
 use crate::line_pipeline::LinePipeline;
 use crate::text_pipeline::TextPipeline;
@@ -86,6 +86,14 @@ impl Renderer {
         let font_data = get_font_data(font);
         let mut atlas = GlyphAtlas::new(font_data, font_size)?;
 
+        // Set up fallback fonts for characters missing from primary
+        if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
+            tracing::warn!("Failed to load fallback font: {}", e);
+        }
+        if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
+            tracing::warn!("Failed to load emoji fallback font: {}", e);
+        }
+
         // Pre-populate common ASCII characters
         for c in ' '..='~' {
             let _ = atlas.get_glyph(c);
@@ -152,6 +160,14 @@ impl Renderer {
         // Create new atlas with new font
         let font_data = get_font_data(font);
         let mut atlas = GlyphAtlas::new(font_data, font_size)?;
+
+        // Set up fallback fonts for characters missing from primary
+        if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
+            tracing::warn!("Failed to load fallback font: {}", e);
+        }
+        if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
+            tracing::warn!("Failed to load emoji fallback font: {}", e);
+        }
 
         // Pre-populate common ASCII characters
         for c in ' '..='~' {
@@ -407,18 +423,28 @@ impl Renderer {
         self.last_frame = now;
 
         let mut chars = Vec::new();
+        let mut cell_backgrounds: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = Vec::new();
 
         // Render pane contents
         for &(x_offset, y_offset, cells) in panes {
             for (row_idx, row) in cells.iter().enumerate() {
                 let baseline_y = y_offset + (row_idx as f32 * cell_h) + ascent;
+                let cell_y = y_offset + (row_idx as f32 * cell_h);
 
                 for (col_idx, cell) in row.iter().enumerate() {
+                    let x = x_offset + col_idx as f32 * cell_w;
+
+                    // Collect cells with non-transparent backgrounds
+                    if cell.bg[3] > 0.01 {
+                        // Draw as horizontal line with thickness = cell_h
+                        let y_center = cell_y + cell_h / 2.0;
+                        cell_backgrounds.push((x, y_center, x + cell_w, y_center, cell_h, cell.bg));
+                    }
+
                     if cell.c == ' ' || cell.c == '\0' {
                         continue;
                     }
 
-                    let x = x_offset + col_idx as f32 * cell_w;
                     chars.push((cell.c, x, baseline_y, cell.fg));
                 }
             }
@@ -443,9 +469,10 @@ impl Renderer {
         self.text_pipeline
             .prepare(&self.gpu.queue, &mut self.atlas, &chars);
 
-        // Prepare lines for rendering (separators + focus borders + optional debug grid)
+        // Prepare lines for rendering (cell backgrounds + separators + focus borders + debug grid)
+        // Cell backgrounds are drawn first (underneath text)
         // In per-pane CRT mode, skip separator/focus lines (use shader glow instead)
-        let mut all_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = Vec::new();
+        let mut all_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = cell_backgrounds;
 
         if !per_pane_crt {
             // Draw separators as lines
@@ -582,10 +609,11 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            self.text_pipeline.render(&mut render_pass);
-
-            // Render lines (focus borders + debug grid if enabled)
+            // Render lines first (cell backgrounds, then separators, focus borders, debug grid)
             self.line_pipeline.render(&mut render_pass);
+
+            // Render text on top
+            self.text_pipeline.render(&mut render_pass);
         }
 
         // Pass 2: Apply burn-in effect (blend current frame with decayed previous)

@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+
+# Commercial fonts (not for distribution)
+**/PragmataPro*

@@ -350,28 +350,23 @@ impl App {
                 for line_idx in 0..grid_lines {
                     let mut row = Vec::with_capacity(grid_cols);
                     let line = Line(line_idx as i32);
-                    let mut in_non_ascii_run = false;
 
                     for col_idx in 0..grid_cols {
                         let cell = &grid[line][Column(col_idx)];
-                        let mut c = cell.c;
+                        let c = cell.c;
                         let flags = cell.flags;
 
-                        // Collapse runs of non-ASCII (and wide char spacers) into single '?'
-                        let is_wide_spacer = flags.contains(Flags::WIDE_CHAR_SPACER);
-                        let is_non_ascii = !c.is_ascii() || (c.is_control() && c != ' ' && c != '\0');
-
-                        if is_wide_spacer {
+                        // Skip wide char spacer cells - the wide char in the adjacent cell
+                        // visually extends into this space
+                        if flags.contains(Flags::WIDE_CHAR_SPACER)
+                            || flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                        {
+                            row.push(RenderCell {
+                                c: ' ',
+                                fg: [0.0, 0.0, 0.0, 0.0],
+                                bg: [0.0, 0.0, 0.0, 0.0],
+                            });
                             continue;
-                        } else if is_non_ascii {
-                            if in_non_ascii_run {
-                                continue;
-                            } else {
-                                c = '?';
-                                in_non_ascii_run = true;
-                            }
-                        } else {
-                            in_non_ascii_run = false;
                         }
 
                         let is_cursor = is_focused && line_idx == cursor_line && col_idx == cursor_col;
@@ -400,31 +395,23 @@ impl App {
                         }
 
                         // Apply special rendering states (cursor and selection invert colors)
-                        let (fg, bg) = if is_cursor {
-                            // Cursor: background color text on foreground color
-                            (color_scheme.background, color_scheme.foreground)
-                        } else if is_selected {
-                            // Selection: invert fg/bg (use scheme bg if cell bg is transparent)
-                            let sel_bg = if cell_bg[3] < 0.01 {
-                                color_scheme.background
-                            } else {
-                                cell_bg
-                            };
-                            (sel_bg, cell_fg)
+                        // Resolve transparent background to scheme background for inversion
+                        let resolved_bg = if cell_bg[3] < 0.01 {
+                            color_scheme.background
+                        } else {
+                            cell_bg
+                        };
+
+                        let (fg, bg) = if is_cursor || is_selected {
+                            // Invert: swap fg and bg
+                            (resolved_bg, cell_fg)
                         } else {
                             (cell_fg, cell_bg)
                         };
 
-                        if is_cursor && (c == ' ' || c == '\0') {
-                            c = '█';
-                        }
-
-                        // For cursor block on empty cell, use foreground color
-                        let final_fg = if is_cursor && c == '█' { color_scheme.foreground } else { fg };
-
                         row.push(RenderCell {
                             c,
-                            fg: final_fg,
+                            fg,
                             bg,
                         });
                     }
@@ -889,6 +876,12 @@ impl ApplicationHandler for App {
                     if ctrl && shift && event.logical_key == Key::Character("G".into()) {
                         self.debug_grid = !self.debug_grid;
                         tracing::info!("Debug grid: {}", self.debug_grid);
+                        return;
+                    }
+
+                    // Ctrl+Shift+C: Copy selection
+                    if ctrl && shift && event.logical_key == Key::Character("C".into()) {
+                        self.copy_selection();
                         return;
                     }
 
