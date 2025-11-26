@@ -396,6 +396,7 @@ impl Renderer {
     /// Separators are (x, y, length, is_vertical) in pixels
     /// focus_rect is (x, y, width, height) in pixels for the focused pane
     /// size_indicators are (center_x, center_y, text) for each pane's size display
+    /// scrollbars are (x, y, height, thumb_start, thumb_height, opacity) in pixels
     /// pane_rects_normalized are (x, y, width, height) in normalized coords (0-1) for CRT
     /// per_pane_crt enables per-pane CRT effects
     /// debug_grid draws 1px lines at cell boundaries for debugging alignment
@@ -407,6 +408,7 @@ impl Renderer {
         separators: &[(f32, f32, f32, bool)],
         focus_rect: Option<(f32, f32, f32, f32)>,
         size_indicators: &[(f32, f32, String)],
+        scrollbars: &[(f32, f32, f32, f32, f32, f32)],
         pane_rects_normalized: &[(f32, f32, f32, f32)],
         per_pane_crt: bool,
         debug_grid: bool,
@@ -475,8 +477,8 @@ impl Renderer {
         let mut all_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = cell_backgrounds;
 
         if !per_pane_crt {
-            // Draw separators as lines
-            let separator_color = [1.0, 0.7, 0.0, 0.6]; // Amber, slightly transparent
+            // Draw separators as lines - use glow color with transparency
+            let separator_color = [effects.glow_color[0], effects.glow_color[1], effects.glow_color[2], 0.6];
             let separator_thickness = 1.0;
             for &(x, y, length, is_vertical) in separators {
                 if is_vertical {
@@ -488,7 +490,13 @@ impl Renderer {
 
             // Draw focus indicator as highlighted borders (on top of separators)
             if let Some((fx, fy, fw, fh)) = focus_rect {
-                let focus_color = [1.0, 0.9, 0.3, 1.0]; // Bright yellow-amber
+                // Brighten the glow color for focus indicator
+                let focus_color = [
+                    (effects.glow_color[0] * 1.2).min(1.0),
+                    (effects.glow_color[1] * 1.2).min(1.0),
+                    (effects.glow_color[2] * 1.2).min(1.0),
+                    1.0
+                ];
                 let line_thickness = 2.0;
                 let edge_threshold = 5.0; // Pixels from window edge to consider "at edge"
 
@@ -537,6 +545,28 @@ impl Renderer {
                     all_lines.push((x0, y, x1, y, line_thickness, grid_color));
                 }
             }
+        }
+
+        // Draw scrollbars
+        // Each scrollbar is (x, y, height, thumb_start, thumb_height, opacity)
+        let scrollbar_width = 4.0;
+        for &(x, y, track_height, thumb_start, thumb_height, opacity) in scrollbars {
+            let track_color = [
+                effects.glow_color[0] * 0.2,
+                effects.glow_color[1] * 0.2,
+                effects.glow_color[2] * 0.2,
+                0.3 * opacity,
+            ];
+            let thumb_color = [
+                effects.glow_color[0],
+                effects.glow_color[1],
+                effects.glow_color[2],
+                0.7 * opacity,
+            ];
+            // Draw track (subtle background)
+            all_lines.push((x, y, x, y + track_height, scrollbar_width, track_color));
+            // Draw thumb (bright indicator)
+            all_lines.push((x, y + thumb_start, x, y + thumb_start + thumb_height, scrollbar_width, thumb_color));
         }
 
         self.line_pipeline.update_screen_size(&self.gpu.queue, width as f32, height as f32);

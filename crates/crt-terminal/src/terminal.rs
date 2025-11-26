@@ -25,12 +25,20 @@ pub struct Terminal {
 #[derive(Clone)]
 struct EventProxy {
     exited: Arc<AtomicBool>,
+    sender: std::sync::mpsc::Sender<String>,
 }
 
 impl alacritty_terminal::event::EventListener for EventProxy {
     fn send_event(&self, event: Event) {
-        if let Event::Exit = event {
-            self.exited.store(true, Ordering::SeqCst);
+        match event {
+            Event::Exit => {
+                self.exited.store(true, Ordering::SeqCst);
+            }
+            Event::PtyWrite(text) => {
+                // Send response back to PTY (e.g., cursor position query response)
+                let _ = self.sender.send(text);
+            }
+            _ => {}
         }
     }
 }
@@ -87,8 +95,13 @@ impl Terminal {
         let pty = tty::new(&pty_config, window_size, 0)?;
 
         let exited = Arc::new(AtomicBool::new(false));
+
+        // Channel for PtyWrite events (cursor position queries, etc.)
+        let (pty_write_tx, pty_write_rx) = std::sync::mpsc::channel::<String>();
+
         let event_proxy = EventProxy {
             exited: Arc::clone(&exited),
+            sender: pty_write_tx,
         };
 
         let term_size = TermSize::new(columns as usize, rows as usize);
@@ -102,6 +115,14 @@ impl Terminal {
         let event_loop = EventLoop::new(Arc::clone(&term), event_proxy, pty, false, false)?;
 
         let sender = event_loop.channel();
+
+        // Spawn thread to forward PtyWrite events back to the PTY
+        let pty_sender = sender.clone();
+        std::thread::spawn(move || {
+            while let Ok(text) = pty_write_rx.recv() {
+                let _ = pty_sender.send(Msg::Input(text.into_bytes().into()));
+            }
+        });
 
         // Spawn the event loop on a background thread
         std::thread::spawn(move || {
