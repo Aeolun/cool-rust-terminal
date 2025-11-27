@@ -11,3 +11,4 @@ alacritty_terminal = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+dirs = { workspace = true }

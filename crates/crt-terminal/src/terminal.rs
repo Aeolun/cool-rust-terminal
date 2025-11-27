@@ -84,7 +84,7 @@ impl Terminal {
 
         let pty_config = tty::Options {
             shell: None,
-            working_directory: None,
+            working_directory: dirs::home_dir(),
             drain_on_exit: true,
             env: std::collections::HashMap::new(),
         };
@@ -188,10 +188,19 @@ impl Terminal {
     }
 
     /// Get cursor position (column, line)
-    pub fn cursor_position(&self) -> (usize, usize) {
+    /// Returns None if cursor is hidden or out of bounds
+    pub fn cursor_position(&self) -> Option<(usize, usize)> {
         let term = self.term.lock();
         let cursor = term.grid().cursor.point;
-        (cursor.column.0, cursor.line.0 as usize)
+        let screen_lines = term.grid().screen_lines();
+
+        // cursor.line.0 is i32, can be negative or out of bounds
+        let line = cursor.line.0;
+        if line < 0 || line as usize >= screen_lines {
+            return None;
+        }
+
+        Some((cursor.column.0, line as usize))
     }
 
     /// Scroll the display by a number of lines (negative = up, positive = down)

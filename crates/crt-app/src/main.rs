@@ -486,7 +486,7 @@ impl App {
             // Only show cursor in focused pane
             let is_focused = *pane_id == focused_pane;
 
-            let (cursor_col, cursor_line) = terminal.cursor_position();
+            let cursor_pos = terminal.cursor_position();
             let selection = &self.selection;
 
             let cells = terminal.with_grid(|grid| {
@@ -523,13 +523,18 @@ impl App {
                             continue;
                         }
 
-                        // Cursor is at grid Line(cursor_line). We're displaying Line(line_idx - display_offset).
-                        // So cursor appears when line_idx - display_offset == cursor_line, i.e., line_idx == cursor_line + display_offset
-                        let cursor_display_line = cursor_line as i32 + display_offset;
-                        let is_cursor = is_focused
-                            && cursor_display_line >= 0
-                            && line_idx == cursor_display_line as usize
-                            && col_idx == cursor_col;
+                        // Check if this cell is the cursor position
+                        let is_cursor = if let Some((cursor_col, cursor_line)) = cursor_pos {
+                            // Cursor is at grid Line(cursor_line). We're displaying Line(line_idx - display_offset).
+                            // So cursor appears when line_idx - display_offset == cursor_line, i.e., line_idx == cursor_line + display_offset
+                            let cursor_display_line = cursor_line as i32 + display_offset;
+                            is_focused
+                                && cursor_display_line >= 0
+                                && line_idx == cursor_display_line as usize
+                                && col_idx == cursor_col
+                        } else {
+                            false
+                        };
                         // Selection uses buffer-relative rows (screen_row - display_offset)
                         let buffer_row = line_idx as i32 - display_offset;
                         let is_selected = is_focused && selection.contains(col_idx, buffer_row);
@@ -915,7 +920,7 @@ impl App {
                 // Beam sweep / interlacing simulation
                 // At 240Hz with divisor 4: 60 fields/sec (NTSC timing)
                 // beam_speed_divisor 0 disables beam simulation
-                interlace_enabled: self.config.effects.interlace_enabled,
+                interlace_enabled: self.config.effects.interlace_enabled && self.config.effects.beam_simulation_enabled,
                 beam_speed_divisor: if self.config.effects.beam_simulation_enabled { 4 } else { 0 },
                 beam_paused: self.beam_paused,
                 beam_step_count: {
