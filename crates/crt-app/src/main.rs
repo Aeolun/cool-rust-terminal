@@ -479,9 +479,9 @@ impl App {
                 continue;
             };
 
-            // Add padding offset
-            let x_offset = rect.x * win_width as f32 + PANE_PADDING;
-            let y_offset = rect.y * win_height as f32 + PANE_PADDING;
+            // Add padding offset, rounded to integer pixels for crisp bitmap font rendering
+            let x_offset = (rect.x * win_width as f32 + PANE_PADDING).floor();
+            let y_offset = (rect.y * win_height as f32 + PANE_PADDING).floor();
 
             // Only show cursor in focused pane
             let is_focused = *pane_id == focused_pane;
@@ -1195,6 +1195,7 @@ impl ApplicationHandler for App {
                 if event.state == ElementState::Pressed {
                     let ctrl = self.modifiers.control_key();
                     let shift = self.modifiers.shift_key();
+                    let super_key = self.modifiers.super_key();
 
                     // Shift+Ctrl+Enter: Add new pane
                     if ctrl && shift && event.logical_key == Key::Named(NamedKey::Enter) {
@@ -1252,14 +1253,18 @@ impl ApplicationHandler for App {
                         return;
                     }
 
-                    // Ctrl+Shift+C: Copy selection
-                    if ctrl && shift && event.logical_key == Key::Character("C".into()) {
+                    // Ctrl+Shift+C or Cmd+C: Copy selection
+                    if (ctrl && shift && event.logical_key == Key::Character("C".into()))
+                        || (super_key && event.logical_key == Key::Character("c".into()))
+                    {
                         self.copy_selection();
                         return;
                     }
 
-                    // Ctrl+Shift+V: Paste from clipboard
-                    if ctrl && shift && event.logical_key == Key::Character("V".into()) {
+                    // Ctrl+Shift+V or Cmd+V: Paste from clipboard
+                    if (ctrl && shift && event.logical_key == Key::Character("V".into()))
+                        || (super_key && event.logical_key == Key::Character("v".into()))
+                    {
                         if let Some(clipboard) = &mut self.clipboard {
                             if let Ok(text) = clipboard.get_text() {
                                 let focused = self.layout.focused_pane();

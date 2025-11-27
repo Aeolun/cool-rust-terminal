@@ -97,14 +97,19 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // This prevents the beam from flashing the background brighter
         let content_brightness = max(current.r, max(current.g, current.b));
         if (content_brightness > 0.05) {
-            // The top of the band was painted earlier, so it has decayed more
-            // Bottom was just painted, so no decay yet
-            // This creates a smooth gradient instead of uniform blocks
-            // (position_in_band is calculated above, accounting for wrap)
-            let in_band_decay = pow(uniforms.decay, 1.0 - position_in_band);
+            // Current frame is always shown at full brightness
+            let current_lit = current * uniforms.brightness;
 
-            // Has content - refresh the phosphor with position-based decay
-            combined = max(current * uniforms.brightness * in_band_decay, previous);
+            // The decay trail effect: top of band has decayed more, bottom is fresh
+            // Only apply this to the persistence (previous), not the current frame
+            // When decay is 0 (burn-in disabled), there's no persistence trail
+            if (uniforms.decay > 0.01) {
+                let in_band_decay = pow(uniforms.decay, 1.0 - position_in_band);
+                combined = max(current_lit, previous * in_band_decay);
+            } else {
+                // Burn-in disabled: just show current frame, no persistence
+                combined = current_lit;
+            }
         } else {
             // Dark pixel - just decay, don't "refresh" with fresh black
             combined = previous;
