@@ -135,19 +135,25 @@ fn is_outside(uv: vec2<f32>) -> bool {
     return uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0;
 }
 
-// Pseudo-random noise - basic hash function
-fn noise(p: vec2<f32>) -> f32 {
-    return fract(sin(dot(p, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+// Integer hash for high-quality pseudo-random numbers (PCG-style)
+fn hash_uint(n: u32) -> u32 {
+    var x = n;
+    x = x ^ (x >> 16u);
+    x = x * 0x7feb352du;
+    x = x ^ (x >> 15u);
+    x = x * 0x846ca68bu;
+    x = x ^ (x >> 16u);
+    return x;
 }
 
-// Temporal noise - changes every frame, no spatial correlation with scanlines
+// Per-pixel noise with no spatial or temporal correlation
 fn temporal_noise(screen_pos: vec2<f32>, time: f32) -> f32 {
-    // Use a 3D hash: x, y, and time all contribute to randomness
-    // This prevents any fixed spatial patterns from forming
-    let p3 = vec3<f32>(screen_pos, time * 60.0);
-    let h = fract(sin(dot(p3, vec3<f32>(12.9898, 78.233, 45.164))) * 43758.5453);
-    // Add a second hash iteration for better distribution
-    return fract(h * 17.0 + sin(dot(p3.zxy, vec3<f32>(93.989, 67.345, 28.764))) * 23421.6312);
+    let ix = u32(screen_pos.x);
+    let iy = u32(screen_pos.y);
+    let frame = u32(time * 60.0);
+    // Combine coordinates with large primes to avoid correlation patterns
+    let seed = ix * 374761393u + iy * 668265263u + frame * 1013904223u;
+    return f32(hash_uint(seed)) / 4294967295.0;
 }
 
 // Scanline effect with two modes:

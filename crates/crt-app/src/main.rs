@@ -730,12 +730,13 @@ impl App {
             let hint_end = hint_start + STARTUP_HINT_DURATION + STARTUP_HINT_FADE;
 
             if elapsed >= hint_start && elapsed < hint_end {
-                let hint_text = "Ctrl+, or Ctrl+Shift+P for settings";
                 // Position in center of focused pane
                 if let Some(rect) = rects.get(&focused_pane) {
                     let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
                     let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
-                    size_indicators.push((center_x, center_y, hint_text.to_string()));
+                    // Show two hint lines
+                    size_indicators.push((center_x, center_y - cell_h * 0.75, "Ctrl+, for settings".to_string()));
+                    size_indicators.push((center_x, center_y + cell_h * 0.75, "Ctrl+Shift+Enter for new pane".to_string()));
                 }
             }
         }
