@@ -321,6 +321,11 @@ impl CrtPipeline {
         glow_color: [f32; 4],
     ) {
         self.time += dt;
+        // Wrap time to prevent float precision loss (keeps noise working)
+        // Power-on animation completes at ~1.05s, so wrap after 600s back to 2.0s
+        if self.time > 600.0 {
+            self.time = 2.0;
+        }
 
         let mut panes = [PaneRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }; MAX_PANES];
         let pane_count = pane_rects.len().min(MAX_PANES);

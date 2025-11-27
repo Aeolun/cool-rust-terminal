@@ -1423,7 +1423,13 @@ impl ApplicationHandler for App {
                                 }
                             }
                             Key::Named(named) => match named {
-                                NamedKey::Enter => Some(vec![b'\r']),
+                                NamedKey::Enter => {
+                                    if alt {
+                                        Some(vec![0x1b, b'\r'])
+                                    } else {
+                                        Some(vec![b'\r'])
+                                    }
+                                }
                                 NamedKey::Backspace => Some(vec![0x7f]),
                                 NamedKey::Tab => Some(vec![b'\t']),
                                 NamedKey::Escape => Some(vec![0x1b]),
@@ -1436,7 +1442,13 @@ impl ApplicationHandler for App {
                                 NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
                                 NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
                                 NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
-                                NamedKey::Space => Some(vec![b' ']),
+                                NamedKey::Space => {
+                                    if alt {
+                                        Some(vec![0x1b, b' '])
+                                    } else {
+                                        Some(vec![b' '])
+                                    }
+                                }
                                 _ => None,
                             },
                             _ => None,
