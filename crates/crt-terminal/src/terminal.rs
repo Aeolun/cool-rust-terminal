@@ -78,6 +78,10 @@ pub enum TerminalError {
 impl Terminal {
     /// Create a new terminal with the given dimensions
     pub fn new(columns: u16, rows: u16) -> Result<Self, TerminalError> {
+        // Set TERM and COLORTERM in the process environment before spawning the shell.
+        // This is required for GUI apps launched from Finder which have no parent terminal.
+        tty::setup_env();
+
         let pty_config = tty::Options {
             shell: None,
             working_directory: None,
