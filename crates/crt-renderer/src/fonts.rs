@@ -20,6 +20,7 @@ static INCONSOLATA: &[u8] = include_bytes!("../../../assets/fonts/modern-inconso
 
 // Fallback fonts with good unicode coverage
 static FALLBACK_HACK: &[u8] = include_bytes!("../../../assets/fonts/fallback-hack/Hack-Regular.ttf");
+static FALLBACK_SYMBOLS: &[u8] = include_bytes!("../../../assets/fonts/fallback-symbols/NotoSansSymbols2-Regular.ttf");
 static FALLBACK_EMOJI: &[u8] = include_bytes!("../../../assets/fonts/fallback-emoji/NotoEmoji-VariableFont_wght.ttf");
 
 // Embed BDF (bitmap) fonts at compile time
@@ -59,6 +60,12 @@ pub fn get_font_data(font: Font) -> &'static [u8] {
 /// Returns the rectangular (tall) fallback font - Hack.
 pub fn get_fallback_font_data() -> &'static [u8] {
     FALLBACK_HACK
+}
+
+/// Get symbols fallback font data for technical symbols.
+/// Returns Noto Sans Symbols.
+pub fn get_symbols_fallback_font_data() -> &'static [u8] {
+    FALLBACK_SYMBOLS
 }
 
 /// Get emoji fallback font data for emoji characters.

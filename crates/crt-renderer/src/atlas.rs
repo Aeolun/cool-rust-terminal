@@ -27,6 +27,8 @@ pub struct GlyphAtlas {
     cell_height: f32,
     fallback_font: Option<Font>,
     fallback_font_size: f32,
+    symbols_font: Option<Font>,
+    symbols_font_size: f32,
     emoji_font: Option<Font>,
     emoji_font_size: f32,
     glyphs: HashMap<char, GlyphInfo>,
@@ -92,6 +94,8 @@ impl GlyphAtlas {
             cell_height,
             fallback_font: None,
             fallback_font_size: font_size,
+            symbols_font: None,
+            symbols_font_size: font_size,
             emoji_font: None,
             emoji_font_size: font_size,
             glyphs: HashMap::new(),
@@ -133,6 +137,8 @@ impl GlyphAtlas {
             cell_height,
             fallback_font: None,
             fallback_font_size,
+            symbols_font: None,
+            symbols_font_size: fallback_font_size,
             emoji_font: None,
             emoji_font_size: fallback_font_size,
             glyphs: HashMap::new(),
@@ -184,6 +190,38 @@ impl GlyphAtlas {
             fallback_font_size,
             self.cell_width,
             self.cell_height
+        );
+
+        Ok(())
+    }
+
+    /// Set a symbols fallback font for technical symbols.
+    pub fn set_symbols_fallback(&mut self, symbols_data: &[u8]) -> Result<(), AtlasError> {
+        let symbols = Font::from_bytes(symbols_data, FontSettings::default())
+            .map_err(|e| AtlasError::FontLoadError(format!("symbols: {}", e)))?;
+
+        let base_size = self.primary_font_size();
+
+        // Calculate font size for symbols to match primary cell height
+        let symbols_line_metrics = symbols
+            .horizontal_line_metrics(base_size)
+            .unwrap_or(fontdue::LineMetrics {
+                ascent: base_size * 0.8,
+                descent: base_size * -0.2,
+                line_gap: 0.0,
+                new_line_size: base_size,
+            });
+
+        let symbols_natural_height = symbols_line_metrics.ascent - symbols_line_metrics.descent;
+        let scale = self.cell_height / symbols_natural_height;
+        let symbols_font_size = base_size * scale;
+
+        self.symbols_font = Some(symbols);
+        self.symbols_font_size = symbols_font_size;
+
+        tracing::info!(
+            "Symbols fallback font configured: size={:.1}",
+            symbols_font_size
         );
 
         Ok(())
@@ -241,6 +279,14 @@ impl GlyphAtlas {
             .unwrap_or(false)
     }
 
+    /// Check if symbols font has a glyph (not .notdef)
+    fn symbols_has_glyph(&self, c: char) -> bool {
+        self.symbols_font
+            .as_ref()
+            .map(|f| f.lookup_glyph_index(c) != 0)
+            .unwrap_or(false)
+    }
+
     /// Check if emoji font has a glyph (not .notdef)
     fn emoji_has_glyph(&self, c: char) -> bool {
         self.emoji_font
@@ -256,9 +302,10 @@ impl GlyphAtlas {
             return Ok(*info);
         }
 
-        // Try fonts in order: primary -> fallback -> emoji -> '?'
+        // Try fonts in order: primary -> fallback -> symbols -> emoji -> '?'
         let primary_has = self.primary_has_glyph(c);
         let fallback_has = self.fallback_has_glyph(c);
+        let symbols_has = self.symbols_has_glyph(c);
         let emoji_has = self.emoji_has_glyph(c);
 
         // Rasterize glyph from appropriate font
@@ -274,6 +321,10 @@ impl GlyphAtlas {
                                 let fallback = self.fallback_font.as_ref().unwrap();
                                 let (fm, fb) = fallback.rasterize(c, self.fallback_font_size);
                                 (fm.width, fm.height, fm.xmin, fm.ymin, self.cell_width, fb, "fallback (primary empty)")
+                            } else if symbols_has {
+                                let symbols = self.symbols_font.as_ref().unwrap();
+                                let (sm, sb) = symbols.rasterize(c, self.symbols_font_size);
+                                (sm.width, sm.height, sm.xmin, sm.ymin, self.cell_width, sb, "symbols (primary empty)")
                             } else if emoji_has {
                                 let emoji = self.emoji_font.as_ref().unwrap();
                                 let (em, eb) = emoji.rasterize(c, self.emoji_font_size);
@@ -299,6 +350,11 @@ impl GlyphAtlas {
                 let fallback = self.fallback_font.as_ref().unwrap();
                 let (m, b) = fallback.rasterize(c, self.fallback_font_size);
                 (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "fallback")
+            } else if symbols_has {
+                // Try symbols font
+                let symbols = self.symbols_font.as_ref().unwrap();
+                let (m, b) = symbols.rasterize(c, self.symbols_font_size);
+                (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "symbols")
             } else if emoji_has {
                 // Try emoji font
                 let emoji = self.emoji_font.as_ref().unwrap();

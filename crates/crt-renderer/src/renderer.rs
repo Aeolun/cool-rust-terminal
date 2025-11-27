@@ -10,7 +10,7 @@ use crt_core::Font;
 use crate::atlas::GlyphAtlas;
 use crate::burnin_pipeline::BurnInPipeline;
 use crate::crt_pipeline::CrtPipeline;
-use crate::fonts::{get_emoji_fallback_font_data, get_fallback_font_data, get_font_data};
+use crate::fonts::{get_emoji_fallback_font_data, get_fallback_font_data, get_font_data, get_symbols_fallback_font_data};
 use crate::gpu::GpuState;
 use crate::line_pipeline::LinePipeline;
 use crate::text_pipeline::TextPipeline;
@@ -98,6 +98,9 @@ impl Renderer {
         if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
             tracing::warn!("Failed to load fallback font: {}", e);
         }
+        if let Err(e) = atlas.set_symbols_fallback(get_symbols_fallback_font_data()) {
+            tracing::warn!("Failed to load symbols fallback font: {}", e);
+        }
         if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
             tracing::warn!("Failed to load emoji fallback font: {}", e);
         }
@@ -178,6 +181,9 @@ impl Renderer {
         if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
             tracing::warn!("Failed to load fallback font: {}", e);
         }
+        if let Err(e) = atlas.set_symbols_fallback(get_symbols_fallback_font_data()) {
+            tracing::warn!("Failed to load symbols fallback font: {}", e);
+        }
         if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
             tracing::warn!("Failed to load emoji fallback font: {}", e);
         }
@@ -233,6 +239,9 @@ impl Renderer {
         // Set up fallback fonts for characters missing from BDF
         if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
             tracing::warn!("Failed to load fallback font: {}", e);
+        }
+        if let Err(e) = atlas.set_symbols_fallback(get_symbols_fallback_font_data()) {
+            tracing::warn!("Failed to load symbols fallback font: {}", e);
         }
         if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
             tracing::warn!("Failed to load emoji fallback font: {}", e);
