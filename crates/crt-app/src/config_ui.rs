@@ -487,17 +487,11 @@ impl ConfigUI {
                 effects.brightness = (effects.brightness + change).clamp(0.1, 2.0);
             }
             ConfigField::PerPaneCrt => {
-                if delta > 0.0 {
-                    self.config.per_pane_crt = true;
-                } else {
-                    self.config.per_pane_crt = false;
-                }
+                self.config.per_pane_crt = delta > 0.0;
             }
             ConfigField::FocusGlowRadius => {
-                // Finer increments (0.0025) when below 0.02, coarser (0.01) above
-                let increment = if effects.focus_glow_radius < 0.02 && delta < 0.0 {
-                    0.0025
-                } else if effects.focus_glow_radius <= 0.02 && delta > 0.0 {
+                // Finer increments (0.0025) when at/below 0.02, coarser (0.01) above
+                let increment = if effects.focus_glow_radius <= 0.02 {
                     0.0025
                 } else {
                     0.01
@@ -506,10 +500,8 @@ impl ConfigUI {
                 effects.focus_glow_radius = (effects.focus_glow_radius + change).clamp(0.0, 0.3);
             }
             ConfigField::FocusGlowWidth => {
-                // Finer increments (0.0025) when below 0.02, coarser (0.01) above
-                let increment = if effects.focus_glow_width < 0.02 && delta < 0.0 {
-                    0.0025
-                } else if effects.focus_glow_width <= 0.02 && delta > 0.0 {
+                // Finer increments (0.0025) when at/below 0.02, coarser (0.01) above
+                let increment = if effects.focus_glow_width <= 0.02 {
                     0.0025
                 } else {
                     0.01
@@ -567,25 +559,13 @@ impl ConfigUI {
                 self.config.color_scheme = presets[new_idx].clone();
             }
             ConfigField::BezelEnabled => {
-                if delta > 0.0 {
-                    self.config.effects.bezel_enabled = true;
-                } else {
-                    self.config.effects.bezel_enabled = false;
-                }
+                self.config.effects.bezel_enabled = delta > 0.0;
             }
             ConfigField::AutoCopySelection => {
-                if delta > 0.0 {
-                    self.config.behavior.auto_copy_selection = true;
-                } else {
-                    self.config.behavior.auto_copy_selection = false;
-                }
+                self.config.behavior.auto_copy_selection = delta > 0.0;
             }
             ConfigField::ShowStartupHint => {
-                if delta > 0.0 {
-                    self.config.behavior.show_startup_hint = true;
-                } else {
-                    self.config.behavior.show_startup_hint = false;
-                }
+                self.config.behavior.show_startup_hint = delta > 0.0;
             }
             ConfigField::ContentScaleX => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };

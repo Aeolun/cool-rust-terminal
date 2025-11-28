@@ -237,6 +237,7 @@ impl App {
     /// Convert pixel coordinates to cell position, also returns debug info:
     /// Returns None if pointing at the void (outside CRT content area)
     /// Otherwise returns (cell_pos, content_pixel, pane_local_pixel, pane_offset)
+    #[allow(clippy::type_complexity)]
     fn pixel_to_cell_debug(
         &self,
         x: f64,
@@ -284,10 +285,8 @@ impl App {
             let content_local_y = distorted_y * 0.5 + 0.5;
 
             // Check if in void
-            if content_local_x < 0.0
-                || content_local_x > 1.0
-                || content_local_y < 0.0
-                || content_local_y > 1.0
+            if !(0.0..=1.0).contains(&content_local_x)
+                || !(0.0..=1.0).contains(&content_local_y)
             {
                 return None;
             }
@@ -313,8 +312,7 @@ impl App {
             let content_uv_x = distorted_x * 0.5 + 0.5;
             let content_uv_y = distorted_y * 0.5 + 0.5;
 
-            if content_uv_x < 0.0 || content_uv_x > 1.0 || content_uv_y < 0.0 || content_uv_y > 1.0
-            {
+            if !(0.0..=1.0).contains(&content_uv_x) || !(0.0..=1.0).contains(&content_uv_y) {
                 return None;
             }
 
@@ -1469,24 +1467,22 @@ impl ApplicationHandler for App {
                                                             self.config = new_config.clone();
                                                             self.resize_terminals();
                                                         }
+                                                    } else if let Err(e) = renderer.set_font(
+                                                        new_config.font,
+                                                        new_config.font_size,
+                                                    ) {
+                                                        tracing::error!(
+                                                            "Failed to change font: {}",
+                                                            e
+                                                        );
                                                     } else {
-                                                        if let Err(e) = renderer.set_font(
-                                                            new_config.font,
-                                                            new_config.font_size,
-                                                        ) {
-                                                            tracing::error!(
-                                                                "Failed to change font: {}",
-                                                                e
-                                                            );
-                                                        } else {
-                                                            tracing::info!(
-                                                                "Font changed to {} at {}px",
-                                                                new_config.font.label(),
-                                                                new_config.font_size
-                                                            );
-                                                            self.config = new_config.clone();
-                                                            self.resize_terminals();
-                                                        }
+                                                        tracing::info!(
+                                                            "Font changed to {} at {}px",
+                                                            new_config.font.label(),
+                                                            new_config.font_size
+                                                        );
+                                                        self.config = new_config.clone();
+                                                        self.resize_terminals();
                                                     }
                                                 }
                                             }

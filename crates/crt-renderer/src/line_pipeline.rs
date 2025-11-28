@@ -162,6 +162,7 @@ impl LinePipeline {
 
     /// Prepare line segments for rendering
     /// Each line is (x0, y0, x1, y1, thickness, color)
+    #[allow(clippy::type_complexity)]
     pub fn prepare(&mut self, queue: &wgpu::Queue, lines: &[(f32, f32, f32, f32, f32, [f32; 4])]) {
         let mut vertices = Vec::with_capacity(lines.len() * 4);
         let mut indices = Vec::with_capacity(lines.len() * 6);

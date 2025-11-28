@@ -89,7 +89,7 @@ impl BdfFont {
         let mut glyphs = HashMap::new();
 
         // Parse header
-        while let Some(line) = lines.next() {
+        for line in lines.by_ref() {
             let line = line.trim();
             if line.starts_with("CHARS ") {
                 // Done with header, parse glyphs
@@ -466,10 +466,10 @@ ENDFONT
         // Check that 'A' has pixels in expected places
         // Row 2 (0-indexed): 0x20 = 00100000, so pixel at col 2
         assert_eq!(pixels[2 * 6 + 2], 255); // Row 2, col 2
-        assert_eq!(pixels[2 * 6 + 0], 0); // Row 2, col 0
+        assert_eq!(pixels[2 * 6], 0); // Row 2, col 0
 
         // Row 7: 0xF8 = 11111000, pixels at cols 0-4
-        assert_eq!(pixels[7 * 6 + 0], 255);
+        assert_eq!(pixels[7 * 6], 255);
         assert_eq!(pixels[7 * 6 + 4], 255);
         assert_eq!(pixels[7 * 6 + 5], 0); // Col 5 is off
     }
@@ -494,7 +494,7 @@ ENDFONT
         assert_eq!(scaled.bitmap[5 * 12 + 5], 255);
 
         // Original row 2, col 0 was empty, so scaled row 4, col 0-1 should be empty
-        assert_eq!(scaled.bitmap[4 * 12 + 0], 0);
+        assert_eq!(scaled.bitmap[4 * 12], 0);
         assert_eq!(scaled.bitmap[4 * 12 + 1], 0);
     }
 

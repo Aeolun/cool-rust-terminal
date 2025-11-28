@@ -503,6 +503,7 @@ impl Renderer {
     /// debug_lines are custom lines for debugging (x1, y1, x2, y2, thickness, color)
     /// focused_pane_index is the index of the focused pane in pane_rects_normalized (-1 if single pane)
     /// effects contains the CRT effect parameters from config
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn render_panes(
         &mut self,
         panes: &[(f32, f32, &[Vec<RenderCell>])],
