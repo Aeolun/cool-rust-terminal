@@ -82,11 +82,21 @@ impl Terminal {
         // This is required for GUI apps launched from Finder which have no parent terminal.
         tty::setup_env();
 
+        #[cfg(not(windows))]
         let pty_config = tty::Options {
             shell: None,
             working_directory: dirs::home_dir(),
             drain_on_exit: true,
             env: std::collections::HashMap::new(),
+        };
+
+        #[cfg(windows)]
+        let pty_config = tty::Options {
+            shell: None,
+            working_directory: dirs::home_dir(),
+            drain_on_exit: true,
+            env: std::collections::HashMap::new(),
+            escape_args: true,
         };
 
         let window_size = WindowSize {
