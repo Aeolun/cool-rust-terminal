@@ -3,6 +3,7 @@
 A CRT-styled terminal emulator written in Rust, inspired by [cool-retro-term](https://github.com/Swordfish90/cool-retro-term).
 
 ![Cool Rust Terminal](https://img.shields.io/badge/status-work%20in%20progress-yellow)
+[![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.ai/code)
 
 ## Features
 
