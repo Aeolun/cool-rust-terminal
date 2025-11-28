@@ -22,6 +22,7 @@ static INCONSOLATA: &[u8] = include_bytes!("../../../assets/fonts/modern-inconso
 static FALLBACK_HACK: &[u8] = include_bytes!("../../../assets/fonts/fallback-hack/Hack-Regular.ttf");
 static FALLBACK_SYMBOLS: &[u8] = include_bytes!("../../../assets/fonts/fallback-symbols/NotoSansSymbols2-Regular.ttf");
 static FALLBACK_EMOJI: &[u8] = include_bytes!("../../../assets/fonts/fallback-emoji/NotoEmoji-VariableFont_wght.ttf");
+static FALLBACK_UNIFONT: &[u8] = include_bytes!("../../../assets/bdf_fonts/unifont-17.0.03.bdf");
 
 // Embed BDF (bitmap) fonts at compile time
 static BDF_FIXED_6X13: &[u8] = include_bytes!("../../../assets/bdf_fonts/6x13.bdf");
@@ -72,6 +73,12 @@ pub fn get_symbols_fallback_font_data() -> &'static [u8] {
 /// Returns Noto Emoji (monochrome).
 pub fn get_emoji_fallback_font_data() -> &'static [u8] {
     FALLBACK_EMOJI
+}
+
+/// Get Unifont BDF data for comprehensive Unicode coverage.
+/// Unifont covers nearly all of Unicode as a bitmap font.
+pub fn get_unifont_fallback_data() -> &'static [u8] {
+    FALLBACK_UNIFONT
 }
 
 /// Get the embedded BDF font data for a given BDF font

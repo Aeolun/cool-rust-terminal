@@ -255,7 +255,7 @@ impl TextPipeline {
         &mut self,
         queue: &wgpu::Queue,
         atlas: &mut GlyphAtlas,
-        chars: &[(char, f32, f32, [f32; 4])], // char, x, baseline_y, color
+        chars: &[(char, f32, f32, [f32; 4], bool)], // char, x, baseline_y, color, is_wide
     ) {
         // Update atlas texture with latest glyph data (new glyphs may have been added)
         queue.write_texture(
@@ -281,8 +281,8 @@ impl TextPipeline {
         let mut vertices = Vec::with_capacity(chars.len() * 4);
         let mut indices = Vec::with_capacity(chars.len() * 6);
 
-        for (i, &(c, x, baseline_y, color)) in chars.iter().enumerate() {
-            let glyph = match atlas.get_glyph(c) {
+        for (i, &(c, x, baseline_y, color, is_wide)) in chars.iter().enumerate() {
+            let glyph = match atlas.get_glyph(c, is_wide) {
                 Ok(g) => g,
                 Err(_) => continue,
             };

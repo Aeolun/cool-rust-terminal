@@ -285,6 +285,90 @@ impl BdfGlyph {
 
         pixels
     }
+
+    /// Render this glyph scaled to a target size using nearest-neighbor interpolation.
+    /// Returns (scaled_width, scaled_height, scaled_offset_x, scaled_offset_y, bitmap).
+    /// The offsets are scaled proportionally to maintain correct positioning.
+    pub fn render_scaled(&self, target_cell_width: u32, target_cell_height: u32,
+                         source_cell_width: u32, source_cell_height: u32) -> ScaledGlyph {
+        // Calculate scale factors
+        let scale_x = target_cell_width as f32 / source_cell_width as f32;
+        let scale_y = target_cell_height as f32 / source_cell_height as f32;
+
+        // Scale glyph dimensions
+        let scaled_width = ((self.width as f32 * scale_x).round() as u32).max(1);
+        let scaled_height = ((self.height as f32 * scale_y).round() as u32).max(1);
+
+        // Scale offsets
+        let scaled_offset_x = (self.offset_x as f32 * scale_x).round() as i32;
+        let scaled_offset_y = (self.offset_y as f32 * scale_y).round() as i32;
+
+        // Scale advance width
+        let scaled_dwidth_x = (self.dwidth_x as f32 * scale_x).round() as i32;
+
+        // Render original bitmap first
+        let original = self.render();
+
+        // If no scaling needed, return original
+        if self.width == scaled_width && self.height == scaled_height {
+            return ScaledGlyph {
+                width: scaled_width,
+                height: scaled_height,
+                offset_x: scaled_offset_x,
+                offset_y: scaled_offset_y,
+                dwidth_x: scaled_dwidth_x,
+                bitmap: original,
+            };
+        }
+
+        // Handle zero-size glyphs (like space)
+        if self.width == 0 || self.height == 0 {
+            return ScaledGlyph {
+                width: 0,
+                height: 0,
+                offset_x: scaled_offset_x,
+                offset_y: scaled_offset_y,
+                dwidth_x: scaled_dwidth_x,
+                bitmap: vec![],
+            };
+        }
+
+        // Scale using nearest-neighbor
+        let mut scaled = vec![0u8; (scaled_width * scaled_height) as usize];
+
+        for dst_y in 0..scaled_height {
+            for dst_x in 0..scaled_width {
+                // Map destination pixel to source pixel
+                let src_x = ((dst_x as f32 / scale_x).floor() as u32).min(self.width - 1);
+                let src_y = ((dst_y as f32 / scale_y).floor() as u32).min(self.height - 1);
+
+                let src_idx = (src_y * self.width + src_x) as usize;
+                let dst_idx = (dst_y * scaled_width + dst_x) as usize;
+
+                scaled[dst_idx] = original[src_idx];
+            }
+        }
+
+        ScaledGlyph {
+            width: scaled_width,
+            height: scaled_height,
+            offset_x: scaled_offset_x,
+            offset_y: scaled_offset_y,
+            dwidth_x: scaled_dwidth_x,
+            bitmap: scaled,
+        }
+    }
+}
+
+/// A glyph that has been scaled to a target size
+#[derive(Debug, Clone)]
+pub struct ScaledGlyph {
+    pub width: u32,
+    pub height: u32,
+    pub offset_x: i32,
+    pub offset_y: i32,
+    pub dwidth_x: i32,
+    pub bitmap: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -374,5 +458,43 @@ ENDFONT
         assert_eq!(pixels[7 * 6 + 0], 255);
         assert_eq!(pixels[7 * 6 + 4], 255);
         assert_eq!(pixels[7 * 6 + 5], 0);   // Col 5 is off
+    }
+
+    #[test]
+    fn test_render_scaled_2x() {
+        let font = BdfFont::parse_str(TEST_BDF).unwrap();
+        let a = font.get_char('A').unwrap();
+
+        // Scale from 6x13 to 12x26 (2x)
+        let scaled = a.render_scaled(12, 26, 6, 13);
+
+        assert_eq!(scaled.width, 12);
+        assert_eq!(scaled.height, 26);
+        assert_eq!(scaled.bitmap.len(), (12 * 26) as usize);
+
+        // At 2x scale, each original pixel becomes a 2x2 block
+        // Original row 2, col 2 had a pixel, so scaled row 4-5, col 4-5 should have pixels
+        assert_eq!(scaled.bitmap[4 * 12 + 4], 255);
+        assert_eq!(scaled.bitmap[4 * 12 + 5], 255);
+        assert_eq!(scaled.bitmap[5 * 12 + 4], 255);
+        assert_eq!(scaled.bitmap[5 * 12 + 5], 255);
+
+        // Original row 2, col 0 was empty, so scaled row 4, col 0-1 should be empty
+        assert_eq!(scaled.bitmap[4 * 12 + 0], 0);
+        assert_eq!(scaled.bitmap[4 * 12 + 1], 0);
+    }
+
+    #[test]
+    fn test_render_scaled_same_size() {
+        let font = BdfFont::parse_str(TEST_BDF).unwrap();
+        let a = font.get_char('A').unwrap();
+
+        // Scale to same size should return identical bitmap
+        let scaled = a.render_scaled(6, 13, 6, 13);
+        let original = a.render();
+
+        assert_eq!(scaled.width, 6);
+        assert_eq!(scaled.height, 13);
+        assert_eq!(scaled.bitmap, original);
     }
 }

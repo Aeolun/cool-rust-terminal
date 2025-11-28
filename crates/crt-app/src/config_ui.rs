@@ -644,6 +644,7 @@ impl ConfigUI {
                         c: ' ',
                         fg: [0.0; 4],
                         bg: [0.0, 0.0, 0.0, 0.0],
+                        is_wide: false,
                     });
                     continue;
                 }
@@ -652,7 +653,7 @@ impl ConfigUI {
                 let panel_row = row - start_row;
 
                 let (c, fg, bg) = self.render_panel_cell(panel_col, panel_row, panel_width, panel_height);
-                cells.push(RenderCell { c, fg, bg });
+                cells.push(RenderCell { c, fg, bg, is_wide: false });
             }
 
             rows.push(cells);

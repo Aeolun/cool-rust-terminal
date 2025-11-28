@@ -10,7 +10,7 @@ use crt_core::Font;
 use crate::atlas::GlyphAtlas;
 use crate::burnin_pipeline::BurnInPipeline;
 use crate::crt_pipeline::CrtPipeline;
-use crate::fonts::{get_emoji_fallback_font_data, get_fallback_font_data, get_font_data, get_symbols_fallback_font_data};
+use crate::fonts::{get_emoji_fallback_font_data, get_fallback_font_data, get_font_data, get_symbols_fallback_font_data, get_unifont_fallback_data};
 use crate::gpu::GpuState;
 use crate::line_pipeline::LinePipeline;
 use crate::text_pipeline::TextPipeline;
@@ -32,6 +32,7 @@ pub struct RenderCell {
     pub c: char,
     pub fg: [f32; 4],
     pub bg: [f32; 4],
+    pub is_wide: bool,
 }
 
 /// Effect settings for CRT shader
@@ -94,12 +95,16 @@ impl Renderer {
         let font_data = get_font_data(font);
         let mut atlas = GlyphAtlas::new(font_data, font_size)?;
 
-        // Set up fallback fonts for characters missing from primary
+        // Set up fallback fonts for characters missing from primary (TTF)
+        // Chain: Hack -> Symbols -> Unifont -> Emoji
         if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
             tracing::warn!("Failed to load fallback font: {}", e);
         }
         if let Err(e) = atlas.set_symbols_fallback(get_symbols_fallback_font_data()) {
             tracing::warn!("Failed to load symbols fallback font: {}", e);
+        }
+        if let Err(e) = atlas.set_bdf_fallback(get_unifont_fallback_data()) {
+            tracing::warn!("Failed to load Unifont fallback: {}", e);
         }
         if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
             tracing::warn!("Failed to load emoji fallback font: {}", e);
@@ -107,22 +112,22 @@ impl Renderer {
 
         // Pre-populate common ASCII characters
         for c in ' '..='~' {
-            let _ = atlas.get_glyph(c);
+            let _ = atlas.get_glyph(c, false);
         }
         // Block characters for cursor
-        let _ = atlas.get_glyph('█');
-        let _ = atlas.get_glyph('▌');
-        let _ = atlas.get_glyph('▐');
-        let _ = atlas.get_glyph('▀');
-        let _ = atlas.get_glyph('▄');
+        let _ = atlas.get_glyph('█', false);
+        let _ = atlas.get_glyph('▌', false);
+        let _ = atlas.get_glyph('▐', false);
+        let _ = atlas.get_glyph('▀', false);
+        let _ = atlas.get_glyph('▄', false);
         // Box drawing for separators
-        let _ = atlas.get_glyph('│');
-        let _ = atlas.get_glyph('─');
+        let _ = atlas.get_glyph('│', false);
+        let _ = atlas.get_glyph('─', false);
         // Corner brackets for focus indicator
-        let _ = atlas.get_glyph('┌');
-        let _ = atlas.get_glyph('┐');
-        let _ = atlas.get_glyph('└');
-        let _ = atlas.get_glyph('┘');
+        let _ = atlas.get_glyph('┌', false);
+        let _ = atlas.get_glyph('┐', false);
+        let _ = atlas.get_glyph('└', false);
+        let _ = atlas.get_glyph('┘', false);
 
         let text_pipeline = TextPipeline::new(&gpu.device, &gpu.queue, gpu.config.format, &atlas);
         let line_pipeline = LinePipeline::new(&gpu.device, gpu.config.format);
@@ -177,12 +182,16 @@ impl Renderer {
         let font_data = get_font_data(font);
         let mut atlas = GlyphAtlas::new(font_data, font_size)?;
 
-        // Set up fallback fonts for characters missing from primary
+        // Set up fallback fonts for characters missing from primary (TTF)
+        // Chain: Hack -> Symbols -> Unifont -> Emoji
         if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
             tracing::warn!("Failed to load fallback font: {}", e);
         }
         if let Err(e) = atlas.set_symbols_fallback(get_symbols_fallback_font_data()) {
             tracing::warn!("Failed to load symbols fallback font: {}", e);
+        }
+        if let Err(e) = atlas.set_bdf_fallback(get_unifont_fallback_data()) {
+            tracing::warn!("Failed to load Unifont fallback: {}", e);
         }
         if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
             tracing::warn!("Failed to load emoji fallback font: {}", e);
@@ -190,22 +199,22 @@ impl Renderer {
 
         // Pre-populate common ASCII characters
         for c in ' '..='~' {
-            let _ = atlas.get_glyph(c);
+            let _ = atlas.get_glyph(c, false);
         }
         // Block characters for cursor
-        let _ = atlas.get_glyph('█');
-        let _ = atlas.get_glyph('▌');
-        let _ = atlas.get_glyph('▐');
-        let _ = atlas.get_glyph('▀');
-        let _ = atlas.get_glyph('▄');
+        let _ = atlas.get_glyph('█', false);
+        let _ = atlas.get_glyph('▌', false);
+        let _ = atlas.get_glyph('▐', false);
+        let _ = atlas.get_glyph('▀', false);
+        let _ = atlas.get_glyph('▄', false);
         // Box drawing for separators
-        let _ = atlas.get_glyph('│');
-        let _ = atlas.get_glyph('─');
+        let _ = atlas.get_glyph('│', false);
+        let _ = atlas.get_glyph('─', false);
         // Corner brackets for focus indicator
-        let _ = atlas.get_glyph('┌');
-        let _ = atlas.get_glyph('┐');
-        let _ = atlas.get_glyph('└');
-        let _ = atlas.get_glyph('┘');
+        let _ = atlas.get_glyph('┌', false);
+        let _ = atlas.get_glyph('┐', false);
+        let _ = atlas.get_glyph('└', false);
+        let _ = atlas.get_glyph('┘', false);
 
         // Recreate text pipeline with new atlas
         let text_pipeline = TextPipeline::new(
@@ -237,11 +246,9 @@ impl Renderer {
         let mut atlas = GlyphAtlas::from_bdf(bdf_data)?;
 
         // Set up fallback fonts for characters missing from BDF
-        if let Err(e) = atlas.set_fallback(get_fallback_font_data()) {
-            tracing::warn!("Failed to load fallback font: {}", e);
-        }
-        if let Err(e) = atlas.set_symbols_fallback(get_symbols_fallback_font_data()) {
-            tracing::warn!("Failed to load symbols fallback font: {}", e);
+        // Chain: Unifont (BDF) -> Emoji (skip TTF fallbacks to maintain bitmap aesthetic)
+        if let Err(e) = atlas.set_bdf_fallback(get_unifont_fallback_data()) {
+            tracing::warn!("Failed to load Unifont fallback: {}", e);
         }
         if let Err(e) = atlas.set_emoji_fallback(get_emoji_fallback_font_data()) {
             tracing::warn!("Failed to load emoji fallback font: {}", e);
@@ -249,22 +256,22 @@ impl Renderer {
 
         // Pre-populate common ASCII characters
         for c in ' '..='~' {
-            let _ = atlas.get_glyph(c);
+            let _ = atlas.get_glyph(c, false);
         }
         // Block characters for cursor
-        let _ = atlas.get_glyph('█');
-        let _ = atlas.get_glyph('▌');
-        let _ = atlas.get_glyph('▐');
-        let _ = atlas.get_glyph('▀');
-        let _ = atlas.get_glyph('▄');
+        let _ = atlas.get_glyph('█', false);
+        let _ = atlas.get_glyph('▌', false);
+        let _ = atlas.get_glyph('▐', false);
+        let _ = atlas.get_glyph('▀', false);
+        let _ = atlas.get_glyph('▄', false);
         // Box drawing for separators
-        let _ = atlas.get_glyph('│');
-        let _ = atlas.get_glyph('─');
+        let _ = atlas.get_glyph('│', false);
+        let _ = atlas.get_glyph('─', false);
         // Corner brackets for focus indicator
-        let _ = atlas.get_glyph('┌');
-        let _ = atlas.get_glyph('┐');
-        let _ = atlas.get_glyph('└');
-        let _ = atlas.get_glyph('┘');
+        let _ = atlas.get_glyph('┌', false);
+        let _ = atlas.get_glyph('┐', false);
+        let _ = atlas.get_glyph('└', false);
+        let _ = atlas.get_glyph('┘', false);
 
         // Get BDF cell size for tracking
         let (cell_w, cell_h) = atlas.cell_size();
@@ -373,7 +380,7 @@ impl Renderer {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        let mut chars = Vec::new();
+        let mut chars: Vec<(char, f32, f32, [f32; 4], bool)> = Vec::new();
 
         for (row_idx, row) in cells.iter().enumerate() {
             let baseline_y = (row_idx as f32 * cell_h) + ascent;
@@ -384,7 +391,7 @@ impl Renderer {
                 }
 
                 let x = col_idx as f32 * cell_w;
-                chars.push((cell.c, x, baseline_y, cell.fg));
+                chars.push((cell.c, x, baseline_y, cell.fg, cell.is_wide));
             }
         }
 
@@ -514,7 +521,7 @@ impl Renderer {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        let mut chars = Vec::new();
+        let mut chars: Vec<(char, f32, f32, [f32; 4], bool)> = Vec::new();
         let mut cell_backgrounds: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = Vec::new();
 
         // Render pane contents
@@ -527,17 +534,19 @@ impl Renderer {
                     let x = x_offset + col_idx as f32 * cell_w;
 
                     // Collect cells with non-transparent backgrounds
+                    // Wide chars need 2x cell width for background
+                    let bg_width = if cell.is_wide { cell_w * 2.0 } else { cell_w };
                     if cell.bg[3] > 0.01 {
                         // Draw as horizontal line with thickness = cell_h
                         let y_center = cell_y + cell_h / 2.0;
-                        cell_backgrounds.push((x, y_center, x + cell_w, y_center, cell_h, cell.bg));
+                        cell_backgrounds.push((x, y_center, x + bg_width, y_center, cell_h, cell.bg));
                     }
 
                     if cell.c == ' ' || cell.c == '\0' {
                         continue;
                     }
 
-                    chars.push((cell.c, x, baseline_y, cell.fg));
+                    chars.push((cell.c, x, baseline_y, cell.fg, cell.is_wide));
                 }
             }
         }
@@ -552,7 +561,7 @@ impl Renderer {
             let y = center_y + ascent / 2.0;
 
             for (i, c) in text.chars().enumerate() {
-                chars.push((c, start_x + i as f32 * cell_w, y, size_color));
+                chars.push((c, start_x + i as f32 * cell_w, y, size_color, false));
             }
         }
 
@@ -865,7 +874,7 @@ impl Renderer {
         let (cell_w, cell_h) = self.atlas.cell_size();
         let ascent = self.atlas.ascent();
         let line_height = cell_h;
-        let mut chars = Vec::new();
+        let mut chars: Vec<(char, f32, f32, [f32; 4], bool)> = Vec::new();
 
         let mut x = 10.0;
         let mut baseline_y = 10.0 + ascent;
@@ -877,7 +886,7 @@ impl Renderer {
                 continue;
             }
 
-            chars.push((c, x, baseline_y, self.font_color));
+            chars.push((c, x, baseline_y, self.font_color, false));
             x += cell_w;
         }
 

@@ -31,6 +31,7 @@ pub struct GlyphAtlas {
     symbols_font_size: f32,
     emoji_font: Option<Font>,
     emoji_font_size: f32,
+    bdf_fallback: Option<BdfFallback>,
     glyphs: HashMap<char, GlyphInfo>,
     atlas_data: Vec<u8>,
     atlas_width: u32,
@@ -38,6 +39,13 @@ pub struct GlyphAtlas {
     next_x: u32,
     next_y: u32,
     row_height: u32,
+}
+
+/// BDF font used as fallback, with its native cell dimensions for scaling
+struct BdfFallback {
+    font: BdfFont,
+    cell_width: u32,
+    cell_height: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +106,7 @@ impl GlyphAtlas {
             symbols_font_size: font_size,
             emoji_font: None,
             emoji_font_size: font_size,
+            bdf_fallback: None,
             glyphs: HashMap::new(),
             atlas_data,
             atlas_width,
@@ -141,6 +150,7 @@ impl GlyphAtlas {
             symbols_font_size: fallback_font_size,
             emoji_font: None,
             emoji_font_size: fallback_font_size,
+            bdf_fallback: None,
             glyphs: HashMap::new(),
             atlas_data,
             atlas_width,
@@ -259,6 +269,30 @@ impl GlyphAtlas {
         Ok(())
     }
 
+    /// Set a BDF fallback font for comprehensive Unicode coverage.
+    /// The font will be scaled to match the primary font's cell dimensions.
+    pub fn set_bdf_fallback(&mut self, bdf_data: &[u8]) -> Result<(), AtlasError> {
+        let font = BdfFont::parse(bdf_data)
+            .map_err(|e| AtlasError::FontLoadError(format!("bdf fallback: {}", e)))?;
+
+        let cell_width = font.cell_width();
+        let cell_height = font.cell_height();
+
+        tracing::info!(
+            "BDF fallback font configured: {}x{} cell, {} glyphs (scaling to {:.0}x{:.0})",
+            cell_width, cell_height, font.glyphs.len(),
+            self.cell_width, self.cell_height
+        );
+
+        self.bdf_fallback = Some(BdfFallback {
+            font,
+            cell_width,
+            cell_height,
+        });
+
+        Ok(())
+    }
+
     pub fn ascent(&self) -> f32 {
         self.ascent
     }
@@ -295,17 +329,35 @@ impl GlyphAtlas {
             .unwrap_or(false)
     }
 
+    /// Check if BDF fallback font has a glyph
+    fn bdf_fallback_has_glyph(&self, c: char) -> bool {
+        self.bdf_fallback
+            .as_ref()
+            .map(|fb| fb.font.get_char(c).is_some())
+            .unwrap_or(false)
+    }
+
     /// Get glyph info, rasterizing if needed. Falls back to fallback font if available,
     /// or '?' if neither font has the character.
-    pub fn get_glyph(&mut self, c: char) -> Result<GlyphInfo, AtlasError> {
-        if let Some(info) = self.glyphs.get(&c) {
+    /// is_wide indicates if this is a double-width character (CJK, etc.)
+    pub fn get_glyph(&mut self, c: char, is_wide: bool) -> Result<GlyphInfo, AtlasError> {
+        // Cache key includes is_wide to handle rare cases where same char might be rendered differently
+        let cache_key = if is_wide {
+            // Use private use area to differentiate wide glyphs in cache
+            char::from_u32(c as u32 | 0x100000).unwrap_or(c)
+        } else {
+            c
+        };
+
+        if let Some(info) = self.glyphs.get(&cache_key) {
             return Ok(*info);
         }
 
-        // Try fonts in order: primary -> fallback -> symbols -> emoji -> '?'
+        // Try fonts in order: primary -> fallback -> symbols -> bdf_fallback -> emoji -> '?'
         let primary_has = self.primary_has_glyph(c);
         let fallback_has = self.fallback_has_glyph(c);
         let symbols_has = self.symbols_has_glyph(c);
+        let bdf_fallback_has = self.bdf_fallback_has_glyph(c);
         let emoji_has = self.emoji_has_glyph(c);
 
         // Rasterize glyph from appropriate font
@@ -325,6 +377,8 @@ impl GlyphAtlas {
                                 let symbols = self.symbols_font.as_ref().unwrap();
                                 let (sm, sb) = symbols.rasterize(c, self.symbols_font_size);
                                 (sm.width, sm.height, sm.xmin, sm.ymin, self.cell_width, sb, "symbols (primary empty)")
+                            } else if bdf_fallback_has {
+                                self.render_bdf_fallback_glyph(c, is_wide, "bdf fallback (primary empty)")
                             } else if emoji_has {
                                 let emoji = self.emoji_font.as_ref().unwrap();
                                 let (em, eb) = emoji.rasterize(c, self.emoji_font_size);
@@ -355,6 +409,9 @@ impl GlyphAtlas {
                 let symbols = self.symbols_font.as_ref().unwrap();
                 let (m, b) = symbols.rasterize(c, self.symbols_font_size);
                 (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "symbols")
+            } else if bdf_fallback_has {
+                // Try BDF fallback (e.g., Unifont for comprehensive Unicode coverage)
+                self.render_bdf_fallback_glyph(c, is_wide, "bdf fallback")
             } else if emoji_has {
                 // Try emoji font
                 let emoji = self.emoji_font.as_ref().unwrap();
@@ -407,7 +464,7 @@ impl GlyphAtlas {
                 offset_x: xmin as f32,
                 offset_y: ymin as f32,
             };
-            self.glyphs.insert(c, info);
+            self.glyphs.insert(cache_key, info);
             return Ok(info);
         }
 
@@ -449,8 +506,46 @@ impl GlyphAtlas {
         self.next_x += width as u32 + 1;
         self.row_height = self.row_height.max(height as u32);
 
-        self.glyphs.insert(c, info);
+        self.glyphs.insert(cache_key, info);
         Ok(info)
+    }
+
+    /// Render a glyph from the BDF fallback font, scaling to match primary cell size.
+    /// For wide characters (CJK, etc.), scales to 2x cell width.
+    /// Returns (width, height, xmin, ymin, advance, bitmap, source_name).
+    fn render_bdf_fallback_glyph(&self, c: char, is_wide: bool, source_name: &'static str) -> (usize, usize, i32, i32, f32, Vec<u8>, &'static str) {
+        let fb = self.bdf_fallback.as_ref().unwrap();
+        let glyph = fb.font.get_char(c).unwrap();
+
+        // Wide chars (CJK, etc.) render at 2x cell width
+        let target_width = if is_wide {
+            (self.cell_width * 2.0) as u32
+        } else {
+            self.cell_width as u32
+        };
+
+        let scaled = glyph.render_scaled(
+            target_width,
+            self.cell_height as u32,
+            fb.cell_width,
+            fb.cell_height,
+        );
+
+        let advance = if is_wide {
+            self.cell_width * 2.0
+        } else {
+            self.cell_width
+        };
+
+        (
+            scaled.width as usize,
+            scaled.height as usize,
+            scaled.offset_x,
+            scaled.offset_y,
+            advance,
+            scaled.bitmap,
+            source_name,
+        )
     }
 
     pub fn atlas_data(&self) -> &[u8] {

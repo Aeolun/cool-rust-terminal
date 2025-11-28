@@ -519,9 +519,12 @@ impl App {
                                 c: ' ',
                                 fg: [0.0, 0.0, 0.0, 0.0],
                                 bg: [0.0, 0.0, 0.0, 0.0],
+                                is_wide: false,
                             });
                             continue;
                         }
+
+                        let is_wide = flags.contains(Flags::WIDE_CHAR);
 
                         // Check if this cell is the cursor position
                         let is_cursor = if let Some((cursor_col, cursor_line)) = cursor_pos {
@@ -580,6 +583,7 @@ impl App {
                             c,
                             fg,
                             bg,
+                            is_wide,
                         });
                     }
 
