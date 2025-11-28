@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit hook for formatting and linting
+
+set -e
+
+echo "Running cargo fmt..."
+cargo fmt --all -- --check
+
+echo "Running cargo clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "Pre-commit checks passed!"

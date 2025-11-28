@@ -285,9 +285,7 @@ impl App {
             let content_local_y = distorted_y * 0.5 + 0.5;
 
             // Check if in void
-            if !(0.0..=1.0).contains(&content_local_x)
-                || !(0.0..=1.0).contains(&content_local_y)
-            {
+            if !(0.0..=1.0).contains(&content_local_x) || !(0.0..=1.0).contains(&content_local_y) {
                 return None;
             }
 

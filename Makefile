@@ -1,7 +1,7 @@
 # ABOUTME: Build automation for Cool Rust Term
 # ABOUTME: Targets for building, packaging, and cleaning the project
 
-.PHONY: build release bundle dmg clean run
+.PHONY: build release bundle dmg clean run setup
 
 # Default target
 all: build
@@ -51,6 +51,11 @@ icons:
 	sips -z 512 512 icon.png --out CoolRustTerm.iconset/icon_512x512.png && \
 	sips -z 1024 1024 icon.png --out CoolRustTerm.iconset/icon_512x512@2x.png && \
 	iconutil -c icns CoolRustTerm.iconset -o icon.icns
+
+# Set up development environment
+setup:
+	git config core.hooksPath .githooks
+	@echo "Git hooks configured!"
 
 # Clean build artifacts
 clean:
