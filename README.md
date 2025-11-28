@@ -55,6 +55,16 @@ cargo build --release
 ./target/release/cool-rust-term
 ```
 
+## Development
+
+After cloning, set up git hooks for automatic formatting and lint checks:
+
+```bash
+make setup
+```
+
+This runs `cargo fmt` and `cargo clippy` before each commit.
+
 ## Architecture
 
 The project is organized as a Cargo workspace with multiple crates:
