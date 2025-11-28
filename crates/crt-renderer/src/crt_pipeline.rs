@@ -40,8 +40,8 @@ struct CrtUniforms {
     vignette: f32,
     // Bezel settings
     bezel_enabled: u32,
-    scanline_mode: u32,         // 0 = row-based, 1 = pixel-level
-    bezel_size: [f32; 2],       // Bezel image size (width, height)
+    scanline_mode: u32,   // 0 = row-based, 1 = pixel-level
+    bezel_size: [f32; 2], // Bezel image size (width, height)
     // 9-patch borders: top, right, bottom, left (in pixels)
     bezel_border_top: f32,
     bezel_border_right: f32,
@@ -52,7 +52,7 @@ struct CrtUniforms {
     content_scale_y: f32,
     // Cell height for scanline alignment (one scanline per text row)
     cell_height: f32,
-    _pad1: f32,  // Padding for vec4 alignment
+    _pad1: f32, // Padding for vec4 alignment
     // Focus glow color (follows font color) - uses vec4 for alignment (w ignored)
     glow_color: [f32; 4],
     // Pane rects (max 16 panes)
@@ -139,7 +139,7 @@ impl CrtPipeline {
                 brightness: 1.0,
                 vignette: 0.25,
                 bezel_enabled: 0,
-                scanline_mode: 0,  // Row-based by default
+                scanline_mode: 0, // Row-based by default
                 bezel_size: [bezel_dimensions.0 as f32, bezel_dimensions.1 as f32],
                 bezel_border_top: 52.0,
                 bezel_border_right: 52.0,
@@ -147,10 +147,15 @@ impl CrtPipeline {
                 bezel_border_left: 52.0,
                 content_scale_x: 1.0,
                 content_scale_y: 1.0,
-                cell_height: 18.0,  // Default font size
+                cell_height: 18.0, // Default font size
                 _pad1: 0.0,
-                glow_color: [1.0, 0.7, 0.0, 1.0],  // Default amber
-                panes: [PaneRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }; MAX_PANES],
+                glow_color: [1.0, 0.7, 0.0, 1.0], // Default amber
+                panes: [PaneRect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 1.0,
+                    h: 1.0,
+                }; MAX_PANES],
             }]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -327,7 +332,12 @@ impl CrtPipeline {
             self.time = 2.0;
         }
 
-        let mut panes = [PaneRect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 }; MAX_PANES];
+        let mut panes = [PaneRect {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+        }; MAX_PANES];
         let pane_count = pane_rects.len().min(MAX_PANES);
         for (i, &(x, y, w, h)) in pane_rects.iter().take(MAX_PANES).enumerate() {
             panes[i] = PaneRect { x, y, w, h };
@@ -375,7 +385,11 @@ impl CrtPipeline {
         self.time = 0.0;
     }
 
-    pub fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, bind_group: &'a wgpu::BindGroup) {
+    pub fn render<'a>(
+        &'a self,
+        render_pass: &mut wgpu::RenderPass<'a>,
+        bind_group: &'a wgpu::BindGroup,
+    ) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, bind_group, &[]);
         render_pass.draw(0..3, 0..1); // Fullscreen triangle

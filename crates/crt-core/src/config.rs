@@ -23,7 +23,7 @@ impl ColorScheme {
         let bg = [0.05, 0.02, 0.0, 1.0];
         let dark = [0.4, 0.2, 0.0, 1.0];
         let medium = [0.7, 0.35, 0.0, 1.0];
-        let bright = [1.0, 0.506, 0.0, 1.0];  // #ff8100
+        let bright = [1.0, 0.506, 0.0, 1.0]; // #ff8100
         let full = [1.0, 0.7, 0.2, 1.0];
 
         Self {
@@ -32,23 +32,23 @@ impl ColorScheme {
             background: bg,
             colors: [
                 // Normal colors (0-7): varying intensities
-                bg,      // 0: black
-                dark,    // 1: red
-                medium,  // 2: green
-                medium,  // 3: yellow
-                dark,    // 4: blue
-                dark,    // 5: magenta
-                medium,  // 6: cyan
-                bright,  // 7: white
+                bg,     // 0: black
+                dark,   // 1: red
+                medium, // 2: green
+                medium, // 3: yellow
+                dark,   // 4: blue
+                dark,   // 5: magenta
+                medium, // 6: cyan
+                bright, // 7: white
                 // Bright colors (8-15)
-                dark,    // 8: bright black (gray)
-                medium,  // 9: bright red
-                bright,  // 10: bright green
-                bright,  // 11: bright yellow
-                medium,  // 12: bright blue
-                medium,  // 13: bright magenta
-                bright,  // 14: bright cyan
-                full,    // 15: bright white
+                dark,   // 8: bright black (gray)
+                medium, // 9: bright red
+                bright, // 10: bright green
+                bright, // 11: bright yellow
+                medium, // 12: bright blue
+                medium, // 13: bright magenta
+                bright, // 14: bright cyan
+                full,   // 15: bright white
             ],
         }
     }
@@ -59,7 +59,7 @@ impl ColorScheme {
         let bg = [0.0, 0.02, 0.01, 1.0];
         let dark = [0.05, 0.26, 0.15, 1.0];
         let medium = [0.09, 0.46, 0.26, 1.0];
-        let bright = [0.133, 0.655, 0.373, 1.0];  // #22a75f
+        let bright = [0.133, 0.655, 0.373, 1.0]; // #22a75f
         let full = [0.2, 0.85, 0.5, 1.0];
 
         Self {
@@ -67,18 +67,18 @@ impl ColorScheme {
             foreground: bright,
             background: bg,
             colors: [
-                bg, dark, medium, medium, dark, dark, medium, bright,
-                dark, medium, bright, bright, medium, medium, bright, full,
+                bg, dark, medium, medium, dark, dark, medium, bright, dark, medium, bright, bright,
+                medium, medium, bright, full,
             ],
         }
     }
 
     /// White/gray monochrome (matches cool-retro-term's white #ffffff)
     pub fn white() -> Self {
-        let bg = [0.0, 0.0, 0.0, 1.0];  // Pure black background like cool-retro-term
+        let bg = [0.0, 0.0, 0.0, 1.0]; // Pure black background like cool-retro-term
         let dark = [0.3, 0.3, 0.3, 1.0];
         let medium = [0.6, 0.6, 0.6, 1.0];
-        let bright = [1.0, 1.0, 1.0, 1.0];  // #ffffff
+        let bright = [1.0, 1.0, 1.0, 1.0]; // #ffffff
         let full = [1.0, 1.0, 1.0, 1.0];
 
         Self {
@@ -86,8 +86,8 @@ impl ColorScheme {
             foreground: bright,
             background: bg,
             colors: [
-                bg, dark, medium, medium, dark, dark, medium, bright,
-                dark, medium, bright, bright, medium, medium, bright, full,
+                bg, dark, medium, medium, dark, dark, medium, bright, dark, medium, bright, bright,
+                medium, medium, bright, full,
             ],
         }
     }
@@ -99,33 +99,28 @@ impl ColorScheme {
             foreground: [0.85, 0.85, 0.85, 1.0],
             background: [0.1, 0.1, 0.1, 1.0],
             colors: [
-                [0.0, 0.0, 0.0, 1.0],       // 0: black
-                [0.8, 0.2, 0.2, 1.0],       // 1: red
-                [0.2, 0.8, 0.2, 1.0],       // 2: green
-                [0.8, 0.8, 0.2, 1.0],       // 3: yellow
-                [0.2, 0.2, 0.8, 1.0],       // 4: blue
-                [0.8, 0.2, 0.8, 1.0],       // 5: magenta
-                [0.2, 0.8, 0.8, 1.0],       // 6: cyan
-                [0.75, 0.75, 0.75, 1.0],    // 7: white
-                [0.4, 0.4, 0.4, 1.0],       // 8: bright black
-                [1.0, 0.4, 0.4, 1.0],       // 9: bright red
-                [0.4, 1.0, 0.4, 1.0],       // 10: bright green
-                [1.0, 1.0, 0.4, 1.0],       // 11: bright yellow
-                [0.4, 0.4, 1.0, 1.0],       // 12: bright blue
-                [1.0, 0.4, 1.0, 1.0],       // 13: bright magenta
-                [0.4, 1.0, 1.0, 1.0],       // 14: bright cyan
-                [1.0, 1.0, 1.0, 1.0],       // 15: bright white
+                [0.0, 0.0, 0.0, 1.0],    // 0: black
+                [0.8, 0.2, 0.2, 1.0],    // 1: red
+                [0.2, 0.8, 0.2, 1.0],    // 2: green
+                [0.8, 0.8, 0.2, 1.0],    // 3: yellow
+                [0.2, 0.2, 0.8, 1.0],    // 4: blue
+                [0.8, 0.2, 0.8, 1.0],    // 5: magenta
+                [0.2, 0.8, 0.8, 1.0],    // 6: cyan
+                [0.75, 0.75, 0.75, 1.0], // 7: white
+                [0.4, 0.4, 0.4, 1.0],    // 8: bright black
+                [1.0, 0.4, 0.4, 1.0],    // 9: bright red
+                [0.4, 1.0, 0.4, 1.0],    // 10: bright green
+                [1.0, 1.0, 0.4, 1.0],    // 11: bright yellow
+                [0.4, 0.4, 1.0, 1.0],    // 12: bright blue
+                [1.0, 0.4, 1.0, 1.0],    // 13: bright magenta
+                [0.4, 1.0, 1.0, 1.0],    // 14: bright cyan
+                [1.0, 1.0, 1.0, 1.0],    // 15: bright white
             ],
         }
     }
 
     pub fn presets() -> Vec<ColorScheme> {
-        vec![
-            Self::amber(),
-            Self::green(),
-            Self::white(),
-            Self::ansi(),
-        ]
+        vec![Self::amber(), Self::green(), Self::white(), Self::ansi()]
     }
 }
 

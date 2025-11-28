@@ -133,7 +133,11 @@ impl Terminal {
             event_loop.spawn();
         });
 
-        Ok(Self { term, sender, exited })
+        Ok(Self {
+            term,
+            sender,
+            exited,
+        })
     }
 
     /// Check if the shell has exited

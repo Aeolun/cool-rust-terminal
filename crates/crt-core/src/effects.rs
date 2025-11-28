@@ -121,7 +121,7 @@ impl EffectSettings {
             content_scale_x: 1.0,
             content_scale_y: 1.0,
             beam_simulation_enabled: false,
-            interlace_enabled: true,  // Default on when beam sim is enabled
+            interlace_enabled: true, // Default on when beam sim is enabled
         }
     }
 }

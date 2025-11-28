@@ -18,7 +18,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
-use crt_core::{Config, ColorScheme, ScanlineMode};
+use crt_core::{ColorScheme, Config, ScanlineMode};
 use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::Terminal;
@@ -66,9 +66,7 @@ fn ansi_color_to_rgba(color: AnsiColor, scheme: &ColorScheme, is_dim: bool) -> [
             // True color RGB
             [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
         }
-        AnsiColor::Indexed(idx) => {
-            scheme.indexed_color(idx)
-        }
+        AnsiColor::Indexed(idx) => scheme.indexed_color(idx),
     };
 
     if is_dim {
@@ -175,9 +173,9 @@ struct App {
     config_ui: ConfigUI,
     debug_grid: bool,
     beam_paused: bool,
-    beam_step_held: bool,       // Is step key currently held
-    beam_step_delay_ms: u32,    // Delay between steps when holding (in ms)
-    beam_step_last: Instant,    // Last time we stepped
+    beam_step_held: bool,    // Is step key currently held
+    beam_step_delay_ms: u32, // Delay between steps when holding (in ms)
+    beam_step_last: Instant, // Last time we stepped
 }
 
 impl App {
@@ -207,7 +205,7 @@ impl App {
             debug_grid: false,
             beam_paused: false,
             beam_step_held: false,
-            beam_step_delay_ms: 100,  // Start at 100ms between steps
+            beam_step_delay_ms: 100, // Start at 100ms between steps
             beam_step_last: Instant::now(),
         }
     }
@@ -219,7 +217,11 @@ impl App {
 
         let sum: f32 = self.fps_samples.iter().sum();
         let avg_dt = sum / self.fps_samples.len() as f32;
-        if avg_dt > 0.0 { 1.0 / avg_dt } else { 0.0 }
+        if avg_dt > 0.0 {
+            1.0 / avg_dt
+        } else {
+            0.0
+        }
     }
 
     /// Returns the currently active config - either the preview config if
@@ -235,7 +237,11 @@ impl App {
     /// Convert pixel coordinates to cell position, also returns debug info:
     /// Returns None if pointing at the void (outside CRT content area)
     /// Otherwise returns (cell_pos, content_pixel, pane_local_pixel, pane_offset)
-    fn pixel_to_cell_debug(&self, x: f64, y: f64) -> Option<(CellPos, (f64, f64), (f64, f64), (f64, f64))> {
+    fn pixel_to_cell_debug(
+        &self,
+        x: f64,
+        y: f64,
+    ) -> Option<(CellPos, (f64, f64), (f64, f64), (f64, f64))> {
         let Some(renderer) = &self.renderer else {
             return None;
         };
@@ -278,12 +284,19 @@ impl App {
             let content_local_y = distorted_y * 0.5 + 0.5;
 
             // Check if in void
-            if content_local_x < 0.0 || content_local_x > 1.0 || content_local_y < 0.0 || content_local_y > 1.0 {
+            if content_local_x < 0.0
+                || content_local_x > 1.0
+                || content_local_y < 0.0
+                || content_local_y > 1.0
+            {
                 return None;
             }
 
             // Convert back to global pixel coords
-            (pane_x + content_local_x * pane_w, pane_y + content_local_y * pane_h)
+            (
+                pane_x + content_local_x * pane_w,
+                pane_y + content_local_y * pane_h,
+            )
         } else {
             // Whole-screen mode: apply distortion globally
             let uv_x = x / win_width as f64;
@@ -300,11 +313,15 @@ impl App {
             let content_uv_x = distorted_x * 0.5 + 0.5;
             let content_uv_y = distorted_y * 0.5 + 0.5;
 
-            if content_uv_x < 0.0 || content_uv_x > 1.0 || content_uv_y < 0.0 || content_uv_y > 1.0 {
+            if content_uv_x < 0.0 || content_uv_x > 1.0 || content_uv_y < 0.0 || content_uv_y > 1.0
+            {
                 return None;
             }
 
-            (content_uv_x * win_width as f64, content_uv_y * win_height as f64)
+            (
+                content_uv_x * win_width as f64,
+                content_uv_y * win_height as f64,
+            )
         };
 
         let (cell_w, cell_h) = renderer.cell_size();
@@ -314,13 +331,19 @@ impl App {
         let screen_row = (local_y / cell_h as f64).floor().max(0.0) as i32;
 
         // Convert screen row to buffer-relative row
-        let display_offset = self.terminals
+        let display_offset = self
+            .terminals
             .get(&focused)
             .map(|t| t.display_offset() as i32)
             .unwrap_or(0);
         let row = screen_row - display_offset;
 
-        Some((CellPos { col, row }, (content_x, content_y), (local_x, local_y), (pane_x, pane_y)))
+        Some((
+            CellPos { col, row },
+            (content_x, content_y),
+            (local_x, local_y),
+            (pane_x, pane_y),
+        ))
     }
 
     fn pixel_to_cell(&self, x: f64, y: f64) -> Option<CellPos> {
@@ -405,7 +428,8 @@ impl App {
         if let Some(rect) = rects.get(&pane_id) {
             // Subtract padding from usable area
             let pane_width = ((rect.width * win_width as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
-            let pane_height = ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
+            let pane_height =
+                ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
             let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
 
             match Terminal::new(cols, rows) {
@@ -436,8 +460,10 @@ impl App {
         for (pane_id, terminal) in &self.terminals {
             if let Some(rect) = rects.get(pane_id) {
                 // Subtract padding from usable area
-                let pane_width = ((rect.width * win_width as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
-                let pane_height = ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
+                let pane_width =
+                    ((rect.width * win_width as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
+                let pane_height =
+                    ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
                 let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
                 terminal.resize(cols, rows);
             }
@@ -548,7 +574,8 @@ impl App {
                         let mut cell_fg = ansi_color_to_rgba(cell.fg, &color_scheme, is_dim);
 
                         // Check if cell has an explicit background (not the default Background)
-                        let has_explicit_bg = !matches!(cell.bg, AnsiColor::Named(NamedColor::Background));
+                        let has_explicit_bg =
+                            !matches!(cell.bg, AnsiColor::Named(NamedColor::Background));
                         let mut cell_bg = if has_explicit_bg {
                             ansi_color_to_rgba(cell.bg, &color_scheme, false)
                         } else {
@@ -579,12 +606,7 @@ impl App {
                             (cell_fg, cell_bg)
                         };
 
-                        row.push(RenderCell {
-                            c,
-                            fg,
-                            bg,
-                            is_wide,
-                        });
+                        row.push(RenderCell { c, fg, bg, is_wide });
                     }
 
                     rows.push(row);
@@ -739,8 +761,16 @@ impl App {
                     let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
                     let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
                     // Show two hint lines
-                    size_indicators.push((center_x, center_y - cell_h * 0.75, "Ctrl+, for settings".to_string()));
-                    size_indicators.push((center_x, center_y + cell_h * 0.75, "Ctrl+Shift+Enter for new pane".to_string()));
+                    size_indicators.push((
+                        center_x,
+                        center_y - cell_h * 0.75,
+                        "Ctrl+, for settings".to_string(),
+                    ));
+                    size_indicators.push((
+                        center_x,
+                        center_y + cell_h * 0.75,
+                        "Ctrl+Shift+Enter for new pane".to_string(),
+                    ));
                 }
             }
         }
@@ -763,7 +793,8 @@ impl App {
 
         // Calculate scrollbars for each pane (with per-pane opacity based on scroll time)
         // Each scrollbar is (x, y, height, thumb_start, thumb_height, opacity) in pixels
-        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = self.layout
+        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = self
+            .layout
             .panes()
             .iter()
             .filter_map(|pane_id| {
@@ -776,17 +807,22 @@ impl App {
                 }
 
                 // Calculate per-pane scrollbar opacity
-                let scrollbar_opacity = self.last_scroll.get(pane_id).map(|t| {
-                    let elapsed = t.elapsed();
-                    if elapsed < SCROLLBAR_VISIBLE_DURATION {
-                        1.0_f32
-                    } else if elapsed < SCROLLBAR_VISIBLE_DURATION + SCROLLBAR_FADE_DURATION {
-                        let fade_elapsed = elapsed - SCROLLBAR_VISIBLE_DURATION;
-                        1.0 - (fade_elapsed.as_secs_f32() / SCROLLBAR_FADE_DURATION.as_secs_f32())
-                    } else {
-                        0.0
-                    }
-                }).unwrap_or(0.0);
+                let scrollbar_opacity = self
+                    .last_scroll
+                    .get(pane_id)
+                    .map(|t| {
+                        let elapsed = t.elapsed();
+                        if elapsed < SCROLLBAR_VISIBLE_DURATION {
+                            1.0_f32
+                        } else if elapsed < SCROLLBAR_VISIBLE_DURATION + SCROLLBAR_FADE_DURATION {
+                            let fade_elapsed = elapsed - SCROLLBAR_VISIBLE_DURATION;
+                            1.0 - (fade_elapsed.as_secs_f32()
+                                / SCROLLBAR_FADE_DURATION.as_secs_f32())
+                        } else {
+                            0.0
+                        }
+                    })
+                    .unwrap_or(0.0);
 
                 if scrollbar_opacity < 0.001 {
                     return None; // Scrollbar fully faded
@@ -819,7 +855,14 @@ impl App {
                 };
                 let thumb_start = (1.0 - scroll_fraction) * (track_height - thumb_height);
 
-                Some((scrollbar_x, pane_y, track_height, thumb_start, thumb_height, scrollbar_opacity))
+                Some((
+                    scrollbar_x,
+                    pane_y,
+                    track_height,
+                    thumb_start,
+                    thumb_height,
+                    scrollbar_opacity,
+                ))
             })
             .collect();
 
@@ -887,7 +930,7 @@ impl App {
                 ui_per_pane_crt,
                 self.debug_grid,
                 &[], // No debug lines in config UI
-                0,     // pane 0 is focused (the whole screen) so glow shows
+                0,   // pane 0 is focused (the whole screen) so glow shows
                 effects,
             ) {
                 tracing::error!("Config UI render error: {}", e);
@@ -925,13 +968,19 @@ impl App {
                 // Beam sweep / interlacing simulation
                 // At 240Hz with divisor 4: 60 fields/sec (NTSC timing)
                 // beam_speed_divisor 0 disables beam simulation
-                interlace_enabled: self.config.effects.interlace_enabled && self.config.effects.beam_simulation_enabled,
-                beam_speed_divisor: if self.config.effects.beam_simulation_enabled { 4 } else { 0 },
+                interlace_enabled: self.config.effects.interlace_enabled
+                    && self.config.effects.beam_simulation_enabled,
+                beam_speed_divisor: if self.config.effects.beam_simulation_enabled {
+                    4
+                } else {
+                    0
+                },
                 beam_paused: self.beam_paused,
                 beam_step_count: {
                     // Step if key is held and enough time has passed
                     let should_step = self.beam_step_held
-                        && self.beam_step_last.elapsed() >= Duration::from_millis(self.beam_step_delay_ms as u64);
+                        && self.beam_step_last.elapsed()
+                            >= Duration::from_millis(self.beam_step_delay_ms as u64);
                     if should_step {
                         self.beam_step_last = Instant::now();
                         1
@@ -942,20 +991,35 @@ impl App {
             };
 
             // Build debug visualization lines - green rectangle around hovered cell
-            let debug_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = if let Some((cell_pos, _content, _local, pane_offset)) = mouse_debug {
-                let green = [0.0, 1.0, 0.0, 1.0];
-                let (pane_x, pane_y) = (pane_offset.0 as f32, pane_offset.1 as f32);
-                let cell_x = pane_x + cell_pos.col as f32 * cell_w;
-                let cell_y = pane_y + cell_pos.row as f32 * cell_h;
-                vec![
-                    (cell_x, cell_y, cell_x + cell_w, cell_y, 2.0, green),                     // top
-                    (cell_x, cell_y + cell_h, cell_x + cell_w, cell_y + cell_h, 2.0, green),   // bottom
-                    (cell_x, cell_y, cell_x, cell_y + cell_h, 2.0, green),                     // left
-                    (cell_x + cell_w, cell_y, cell_x + cell_w, cell_y + cell_h, 2.0, green),   // right
-                ]
-            } else {
-                Vec::new()
-            };
+            let debug_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> =
+                if let Some((cell_pos, _content, _local, pane_offset)) = mouse_debug {
+                    let green = [0.0, 1.0, 0.0, 1.0];
+                    let (pane_x, pane_y) = (pane_offset.0 as f32, pane_offset.1 as f32);
+                    let cell_x = pane_x + cell_pos.col as f32 * cell_w;
+                    let cell_y = pane_y + cell_pos.row as f32 * cell_h;
+                    vec![
+                        (cell_x, cell_y, cell_x + cell_w, cell_y, 2.0, green), // top
+                        (
+                            cell_x,
+                            cell_y + cell_h,
+                            cell_x + cell_w,
+                            cell_y + cell_h,
+                            2.0,
+                            green,
+                        ), // bottom
+                        (cell_x, cell_y, cell_x, cell_y + cell_h, 2.0, green), // left
+                        (
+                            cell_x + cell_w,
+                            cell_y,
+                            cell_x + cell_w,
+                            cell_y + cell_h,
+                            2.0,
+                            green,
+                        ), // right
+                    ]
+                } else {
+                    Vec::new()
+                };
 
             if let Err(e) = renderer.render_panes(
                 &panes,
@@ -984,14 +1048,22 @@ impl App {
         let new_pane_id = self.layout.add_pane();
         self.resize_terminals(); // Existing terminals need to shrink
         self.create_terminal_for_pane(new_pane_id);
-        tracing::info!("Added pane {:?}, total panes: {}", new_pane_id, self.layout.panes().len());
+        tracing::info!(
+            "Added pane {:?}, total panes: {}",
+            new_pane_id,
+            self.layout.panes().len()
+        );
     }
 
     fn close_pane(&mut self, pane_id: PaneId) {
         self.terminals.remove(&pane_id);
         self.layout.close(pane_id);
         self.resize_terminals(); // Remaining terminals expand
-        tracing::info!("Closed pane {:?}, remaining panes: {}", pane_id, self.layout.panes().len());
+        tracing::info!(
+            "Closed pane {:?}, remaining panes: {}",
+            pane_id,
+            self.layout.panes().len()
+        );
     }
 
     fn check_exited_terminals(&mut self) -> Vec<PaneId> {
@@ -1074,11 +1146,7 @@ impl ApplicationHandler for App {
         self.create_terminal_for_pane(initial_pane);
 
         let (cols, rows) = self.renderer.as_ref().unwrap().grid_size();
-        tracing::info!(
-            "Window and renderer initialized ({}x{} cells)",
-            cols,
-            rows
-        );
+        tracing::info!("Window and renderer initialized ({}x{} cells)", cols, rows);
     }
 
     fn window_event(
@@ -1165,7 +1233,9 @@ impl ApplicationHandler for App {
                             }
 
                             // Only start selection if pointing at valid content (not the void)
-                            if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                            if let Some(pos) =
+                                self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1)
+                            {
                                 self.selection.start = pos;
                                 self.selection.end = pos;
                                 self.selection.active = true;
@@ -1194,7 +1264,9 @@ impl ApplicationHandler for App {
 
                         // Update selection end if actively selecting while scrolling
                         if self.selection.active {
-                            if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                            if let Some(pos) =
+                                self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1)
+                            {
                                 self.selection.end = pos;
                             }
                         }
@@ -1244,22 +1316,36 @@ impl ApplicationHandler for App {
                         if self.beam_paused {
                             self.beam_step_held = true;
                             // Immediate first step
-                            self.beam_step_last = Instant::now() - Duration::from_millis(self.beam_step_delay_ms as u64);
+                            self.beam_step_last = Instant::now()
+                                - Duration::from_millis(self.beam_step_delay_ms as u64);
                         }
                         return;
                     }
 
                     // Ctrl+Shift+=: Decrease step delay (faster stepping)
-                    if ctrl && shift && (event.logical_key == Key::Character("=".into()) || event.logical_key == Key::Character("+".into())) {
-                        self.beam_step_delay_ms = (self.beam_step_delay_ms.saturating_sub(10)).max(4);
-                        tracing::info!("Beam step delay: {}ms ({:.1} fps)", self.beam_step_delay_ms, 1000.0 / self.beam_step_delay_ms as f32);
+                    if ctrl
+                        && shift
+                        && (event.logical_key == Key::Character("=".into())
+                            || event.logical_key == Key::Character("+".into()))
+                    {
+                        self.beam_step_delay_ms =
+                            (self.beam_step_delay_ms.saturating_sub(10)).max(4);
+                        tracing::info!(
+                            "Beam step delay: {}ms ({:.1} fps)",
+                            self.beam_step_delay_ms,
+                            1000.0 / self.beam_step_delay_ms as f32
+                        );
                         return;
                     }
 
                     // Ctrl+Shift+-: Increase step delay (slower stepping)
                     if ctrl && shift && event.logical_key == Key::Character("-".into()) {
                         self.beam_step_delay_ms = (self.beam_step_delay_ms + 10).min(500);
-                        tracing::info!("Beam step delay: {}ms ({:.1} fps)", self.beam_step_delay_ms, 1000.0 / self.beam_step_delay_ms as f32);
+                        tracing::info!(
+                            "Beam step delay: {}ms ({:.1} fps)",
+                            self.beam_step_delay_ms,
+                            1000.0 / self.beam_step_delay_ms as f32
+                        );
                         return;
                     }
 
@@ -1342,7 +1428,8 @@ impl ApplicationHandler for App {
                                 self.config_ui.selected = 0;
                             }
                             Key::Character(c) if c == "2" => {
-                                self.config_ui.current_tab = crate::config_ui::ConfigTab::Appearance;
+                                self.config_ui.current_tab =
+                                    crate::config_ui::ConfigTab::Appearance;
                                 self.config_ui.selected = 0;
                             }
                             Key::Character(c) if c == "3" => {
@@ -1356,26 +1443,47 @@ impl ApplicationHandler for App {
                                             let new_config = self.config_ui.save();
                                             // Update font if changed
                                             if let Some(renderer) = &mut self.renderer {
-                                                let font_changed = new_config.bdf_font != self.config.bdf_font
+                                                let font_changed = new_config.bdf_font
+                                                    != self.config.bdf_font
                                                     || new_config.font != self.config.font
-                                                    || (new_config.font_size - self.config.font_size).abs() > 0.1;
+                                                    || (new_config.font_size
+                                                        - self.config.font_size)
+                                                        .abs()
+                                                        > 0.1;
 
                                                 if font_changed {
                                                     // Apply the appropriate font type
                                                     if let Some(bdf_font) = new_config.bdf_font {
-                                                        if let Err(e) = renderer.set_bdf_font(bdf_font) {
-                                                            tracing::error!("Failed to change to BDF font: {}", e);
+                                                        if let Err(e) =
+                                                            renderer.set_bdf_font(bdf_font)
+                                                        {
+                                                            tracing::error!(
+                                                                "Failed to change to BDF font: {}",
+                                                                e
+                                                            );
                                                         } else {
-                                                            tracing::info!("Font changed to BDF: {}", bdf_font.label());
+                                                            tracing::info!(
+                                                                "Font changed to BDF: {}",
+                                                                bdf_font.label()
+                                                            );
                                                             self.config = new_config.clone();
                                                             self.resize_terminals();
                                                         }
                                                     } else {
-                                                        if let Err(e) = renderer.set_font(new_config.font, new_config.font_size) {
-                                                            tracing::error!("Failed to change font: {}", e);
+                                                        if let Err(e) = renderer.set_font(
+                                                            new_config.font,
+                                                            new_config.font_size,
+                                                        ) {
+                                                            tracing::error!(
+                                                                "Failed to change font: {}",
+                                                                e
+                                                            );
                                                         } else {
-                                                            tracing::info!("Font changed to {} at {}px",
-                                                                new_config.font.label(), new_config.font_size);
+                                                            tracing::info!(
+                                                                "Font changed to {} at {}px",
+                                                                new_config.font.label(),
+                                                                new_config.font_size
+                                                            );
                                                             self.config = new_config.clone();
                                                             self.resize_terminals();
                                                         }
@@ -1467,7 +1575,9 @@ impl ApplicationHandler for App {
                     }
                 } else if event.state == ElementState::Released {
                     // Handle key releases
-                    if event.logical_key == Key::Character("N".into()) || event.logical_key == Key::Character("n".into()) {
+                    if event.logical_key == Key::Character("N".into())
+                        || event.logical_key == Key::Character("n".into())
+                    {
                         self.beam_step_held = false;
                     }
                 }

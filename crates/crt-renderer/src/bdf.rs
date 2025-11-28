@@ -71,7 +71,9 @@ impl BdfFont {
         let mut lines = content.lines().peekable();
 
         // Verify STARTFONT
-        let first_line = lines.next().ok_or(BdfError::InvalidFormat("Empty file".into()))?;
+        let first_line = lines
+            .next()
+            .ok_or(BdfError::InvalidFormat("Empty file".into()))?;
         if !first_line.starts_with("STARTFONT") {
             return Err(BdfError::InvalidFormat("Missing STARTFONT".into()));
         }
@@ -151,7 +153,10 @@ impl BdfFont {
         })
     }
 
-    fn parse_glyph<'a, I>(name: &str, lines: &mut std::iter::Peekable<I>) -> Result<Option<BdfGlyph>, BdfError>
+    fn parse_glyph<'a, I>(
+        name: &str,
+        lines: &mut std::iter::Peekable<I>,
+    ) -> Result<Option<BdfGlyph>, BdfError>
     where
         I: Iterator<Item = &'a str>,
     {
@@ -176,7 +181,9 @@ impl BdfFont {
                 let bytes = Self::parse_hex_row(line)?;
                 bitmap.push(bytes);
             } else if let Some(rest) = line.strip_prefix("ENCODING ") {
-                let enc: i32 = rest.trim().parse()
+                let enc: i32 = rest
+                    .trim()
+                    .parse()
                     .map_err(|_| BdfError::ParseNumber(format!("encoding: {}", rest)))?;
                 // Skip negative encodings (they're Adobe-specific)
                 if enc < 0 {
@@ -230,7 +237,9 @@ impl BdfFont {
         let mut chars = hex.chars().peekable();
 
         while chars.peek().is_some() {
-            let hi = chars.next().ok_or_else(|| BdfError::InvalidFormat("Unexpected end of hex".into()))?;
+            let hi = chars
+                .next()
+                .ok_or_else(|| BdfError::InvalidFormat("Unexpected end of hex".into()))?;
             let lo = chars.next().unwrap_or('0');
             let byte = u8::from_str_radix(&format!("{}{}", hi, lo), 16)
                 .map_err(|_| BdfError::InvalidFormat(format!("Invalid hex: {}{}", hi, lo)))?;
@@ -289,8 +298,13 @@ impl BdfGlyph {
     /// Render this glyph scaled to a target size using nearest-neighbor interpolation.
     /// Returns (scaled_width, scaled_height, scaled_offset_x, scaled_offset_y, bitmap).
     /// The offsets are scaled proportionally to maintain correct positioning.
-    pub fn render_scaled(&self, target_cell_width: u32, target_cell_height: u32,
-                         source_cell_width: u32, source_cell_height: u32) -> ScaledGlyph {
+    pub fn render_scaled(
+        &self,
+        target_cell_width: u32,
+        target_cell_height: u32,
+        source_cell_width: u32,
+        source_cell_height: u32,
+    ) -> ScaledGlyph {
         // Calculate scale factors
         let scale_x = target_cell_width as f32 / source_cell_width as f32;
         let scale_y = target_cell_height as f32 / source_cell_height as f32;
@@ -452,12 +466,12 @@ ENDFONT
         // Check that 'A' has pixels in expected places
         // Row 2 (0-indexed): 0x20 = 00100000, so pixel at col 2
         assert_eq!(pixels[2 * 6 + 2], 255); // Row 2, col 2
-        assert_eq!(pixels[2 * 6 + 0], 0);   // Row 2, col 0
+        assert_eq!(pixels[2 * 6 + 0], 0); // Row 2, col 0
 
         // Row 7: 0xF8 = 11111000, pixels at cols 0-4
         assert_eq!(pixels[7 * 6 + 0], 255);
         assert_eq!(pixels[7 * 6 + 4], 255);
-        assert_eq!(pixels[7 * 6 + 5], 0);   // Col 5 is off
+        assert_eq!(pixels[7 * 6 + 5], 0); // Col 5 is off
     }
 
     #[test]

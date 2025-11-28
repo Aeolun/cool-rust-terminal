@@ -299,7 +299,6 @@ impl TextPipeline {
             let x1 = x0 + glyph.width as f32;
             let y1 = y0 + glyph.height as f32;
 
-
             let u0 = glyph.uv_x;
             let v0 = glyph.uv_y;
             let u1 = glyph.uv_x + glyph.uv_width;

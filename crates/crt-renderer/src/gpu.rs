@@ -58,10 +58,16 @@ impl GpuState {
 
         // Prefer Mailbox for high refresh rate displays (no frame limiting, triple-buffered)
         // Fall back to Fifo (standard vsync) if Mailbox isn't available
-        let present_mode = if surface_caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        let present_mode = if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Mailbox)
+        {
             tracing::info!("Using Mailbox present mode (uncapped framerate)");
             wgpu::PresentMode::Mailbox
-        } else if surface_caps.present_modes.contains(&wgpu::PresentMode::Fifo) {
+        } else if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Fifo)
+        {
             tracing::info!("Using Fifo present mode (vsync)");
             wgpu::PresentMode::Fifo
         } else {

@@ -14,7 +14,11 @@ pub enum ConfigTab {
 
 impl ConfigTab {
     fn all() -> &'static [ConfigTab] {
-        &[ConfigTab::Effects, ConfigTab::Appearance, ConfigTab::Behavior]
+        &[
+            ConfigTab::Effects,
+            ConfigTab::Appearance,
+            ConfigTab::Behavior,
+        ]
     }
 
     fn label(&self) -> &'static str {
@@ -110,7 +114,10 @@ impl ConfigField {
 
     /// Returns true if a blank line should be rendered before this field
     fn has_separator_before(&self) -> bool {
-        matches!(self, ConfigField::PerPaneCrt | ConfigField::BezelEnabled | ConfigField::BeamSimulation)
+        matches!(
+            self,
+            ConfigField::PerPaneCrt | ConfigField::BezelEnabled | ConfigField::BeamSimulation
+        )
     }
 
     fn label(&self) -> &'static str {
@@ -166,11 +173,24 @@ impl ConfigField {
     }
 
     fn is_toggle(&self) -> bool {
-        matches!(self, ConfigField::PerPaneCrt | ConfigField::BezelEnabled | ConfigField::AutoCopySelection | ConfigField::ShowStartupHint | ConfigField::FontType | ConfigField::ScanlineMode | ConfigField::BeamSimulation | ConfigField::Interlace)
+        matches!(
+            self,
+            ConfigField::PerPaneCrt
+                | ConfigField::BezelEnabled
+                | ConfigField::AutoCopySelection
+                | ConfigField::ShowStartupHint
+                | ConfigField::FontType
+                | ConfigField::ScanlineMode
+                | ConfigField::BeamSimulation
+                | ConfigField::Interlace
+        )
     }
 
     fn is_selector(&self) -> bool {
-        matches!(self, ConfigField::FontFamily | ConfigField::BdfFontFamily | ConfigField::ColorSchemeField)
+        matches!(
+            self,
+            ConfigField::FontFamily | ConfigField::BdfFontFamily | ConfigField::ColorSchemeField
+        )
     }
 
     fn is_button(&self) -> bool {
@@ -199,11 +219,15 @@ impl ConfigField {
             | ConfigField::BeamSimulation
             | ConfigField::Interlace => Some(ConfigTab::Effects),
             // Appearance tab
-            ConfigField::FontType | ConfigField::FontFamily | ConfigField::FontSize | ConfigField::BdfFontFamily | ConfigField::ColorSchemeField => {
-                Some(ConfigTab::Appearance)
-            }
+            ConfigField::FontType
+            | ConfigField::FontFamily
+            | ConfigField::FontSize
+            | ConfigField::BdfFontFamily
+            | ConfigField::ColorSchemeField => Some(ConfigTab::Appearance),
             // Behavior tab
-            ConfigField::AutoCopySelection | ConfigField::ShowStartupHint => Some(ConfigTab::Behavior),
+            ConfigField::AutoCopySelection | ConfigField::ShowStartupHint => {
+                Some(ConfigTab::Behavior)
+            }
             // Save/Cancel are on all tabs
             ConfigField::Save | ConfigField::Cancel => None,
         }
@@ -308,7 +332,11 @@ impl ConfigUI {
     pub fn prev_tab(&mut self) {
         let tabs = ConfigTab::all();
         let current_idx = self.current_tab.index();
-        let prev_idx = if current_idx == 0 { tabs.len() - 1 } else { current_idx - 1 };
+        let prev_idx = if current_idx == 0 {
+            tabs.len() - 1
+        } else {
+            current_idx - 1
+        };
         self.current_tab = tabs[prev_idx];
         self.selected = 0; // Reset selection when switching tabs
     }
@@ -375,7 +403,8 @@ impl ConfigUI {
                 None
             }
             ConfigField::AutoCopySelection => {
-                self.config.behavior.auto_copy_selection = !self.config.behavior.auto_copy_selection;
+                self.config.behavior.auto_copy_selection =
+                    !self.config.behavior.auto_copy_selection;
                 None
             }
             ConfigField::ShowStartupHint => {
@@ -401,7 +430,8 @@ impl ConfigUI {
                 None
             }
             ConfigField::BeamSimulation => {
-                self.config.effects.beam_simulation_enabled = !self.config.effects.beam_simulation_enabled;
+                self.config.effects.beam_simulation_enabled =
+                    !self.config.effects.beam_simulation_enabled;
                 None
             }
             ConfigField::Interlace => {
@@ -489,7 +519,8 @@ impl ConfigUI {
             }
             ConfigField::FocusGlowIntensity => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
-                effects.focus_glow_intensity = (effects.focus_glow_intensity + change).clamp(0.0, 1.0);
+                effects.focus_glow_intensity =
+                    (effects.focus_glow_intensity + change).clamp(0.0, 1.0);
             }
             ConfigField::FontType => {
                 // Toggle between TTF and BDF via left/right arrows
@@ -613,7 +644,7 @@ impl ConfigUI {
         // Add extra space since TTF vs BDF modes have different field counts
         // This keeps the panel a consistent size
         max_rows = max_rows.max(6); // Minimum height for Appearance tab
-        // Add: top border (1) + tab bar (1) + padding (1) + content rows + bottom border (1)
+                                    // Add: top border (1) + tab bar (1) + padding (1) + content rows + bottom border (1)
         4 + max_rows
     }
 
@@ -652,8 +683,14 @@ impl ConfigUI {
                 let panel_col = col - start_col;
                 let panel_row = row - start_row;
 
-                let (c, fg, bg) = self.render_panel_cell(panel_col, panel_row, panel_width, panel_height);
-                cells.push(RenderCell { c, fg, bg, is_wide: false });
+                let (c, fg, bg) =
+                    self.render_panel_cell(panel_col, panel_row, panel_width, panel_height);
+                cells.push(RenderCell {
+                    c,
+                    fg,
+                    bg,
+                    is_wide: false,
+                });
             }
 
             rows.push(cells);
@@ -758,11 +795,7 @@ impl ConfigUI {
             if content_col < line.len() {
                 let c = line.chars().nth(content_col).unwrap_or(' ');
                 let text_fg = if is_selected { bright } else { fg };
-                let text_bg = if is_selected {
-                    self.highlight_bg()
-                } else {
-                    bg
-                };
+                let text_bg = if is_selected { self.highlight_bg() } else { bg };
                 return (c, text_fg, text_bg);
             }
         }
@@ -827,11 +860,7 @@ impl ConfigUI {
             let filled = ((value * bar_width as f32).round() as usize).min(bar_width);
             let empty = bar_width - filled;
 
-            let bar = format!(
-                "[{}{}]",
-                "=".repeat(filled),
-                "-".repeat(empty)
-            );
+            let bar = format!("[{}{}]", "=".repeat(filled), "-".repeat(empty));
 
             let value_str = match field {
                 ConfigField::Curvature => format!("{:.2}", self.config.effects.screen_curvature),
@@ -842,22 +871,30 @@ impl ConfigUI {
                 ConfigField::Flicker => format!("{:.2}", self.config.effects.flicker),
                 ConfigField::Vignette => format!("{:.2}", self.config.effects.vignette),
                 ConfigField::Brightness => format!("{:.2}", self.config.effects.brightness),
-                ConfigField::FocusGlowRadius => format!("{:.4}", self.config.effects.focus_glow_radius),
-                ConfigField::FocusGlowWidth => format!("{:.4}", self.config.effects.focus_glow_width),
-                ConfigField::FocusGlowIntensity => format!("{:.2}", self.config.effects.focus_glow_intensity),
+                ConfigField::FocusGlowRadius => {
+                    format!("{:.4}", self.config.effects.focus_glow_radius)
+                }
+                ConfigField::FocusGlowWidth => {
+                    format!("{:.4}", self.config.effects.focus_glow_width)
+                }
+                ConfigField::FocusGlowIntensity => {
+                    format!("{:.2}", self.config.effects.focus_glow_intensity)
+                }
                 ConfigField::FontSize => format!("{:.0}px", self.config.font_size),
                 _ => String::new(),
             };
 
             let prefix = if selected { "> " } else { "  " };
-            format!(
-                "{}{:12} {} {}",
-                prefix, label, bar, value_str
-            )
+            format!("{}{:12} {} {}", prefix, label, bar, value_str)
         } else if field.is_selector() {
             let value_name = match field {
                 ConfigField::FontFamily => self.config.font.label().to_string(),
-                ConfigField::BdfFontFamily => self.config.bdf_font.map(|f| f.label()).unwrap_or("?").to_string(),
+                ConfigField::BdfFontFamily => self
+                    .config
+                    .bdf_font
+                    .map(|f| f.label())
+                    .unwrap_or("?")
+                    .to_string(),
                 ConfigField::ColorSchemeField => self.config.color_scheme.name.clone(),
                 _ => "?".to_string(),
             };
@@ -866,7 +903,11 @@ impl ConfigUI {
         } else if field.is_toggle() {
             // FontType is special - shows TTF/BDF instead of ON/OFF, same width as selectors
             if field == ConfigField::FontType {
-                let type_name = if self.config.bdf_font.is_some() { "BDF" } else { "TTF" };
+                let type_name = if self.config.bdf_font.is_some() {
+                    "BDF"
+                } else {
+                    "TTF"
+                };
                 let prefix = if selected { "> " } else { "  " };
                 return format!("{}{:12} < {:^13} >", prefix, label, type_name);
             }

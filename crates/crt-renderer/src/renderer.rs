@@ -10,7 +10,10 @@ use crt_core::Font;
 use crate::atlas::GlyphAtlas;
 use crate::burnin_pipeline::BurnInPipeline;
 use crate::crt_pipeline::CrtPipeline;
-use crate::fonts::{get_emoji_fallback_font_data, get_fallback_font_data, get_font_data, get_symbols_fallback_font_data, get_unifont_fallback_data};
+use crate::fonts::{
+    get_emoji_fallback_font_data, get_fallback_font_data, get_font_data,
+    get_symbols_fallback_font_data, get_unifont_fallback_data,
+};
 use crate::gpu::GpuState;
 use crate::line_pipeline::LinePipeline;
 use crate::text_pipeline::TextPipeline;
@@ -39,7 +42,7 @@ pub struct RenderCell {
 pub struct EffectParams {
     pub curvature: f32,
     pub scanline_intensity: f32,
-    pub scanline_mode: u32,  // 0 = row-based, 1 = pixel-level
+    pub scanline_mode: u32, // 0 = row-based, 1 = pixel-level
     pub bloom: f32,
     pub burn_in: f32,
     pub focus_glow_radius: f32,
@@ -55,9 +58,9 @@ pub struct EffectParams {
     pub glow_color: [f32; 4],
     // Beam sweep / interlacing simulation
     pub interlace_enabled: bool,
-    pub beam_speed_divisor: u32,  // How many frames per beam slice (e.g., 4 for 240Hz -> 60 fields/sec)
-    pub beam_paused: bool,        // Freeze beam position for debugging
-    pub beam_step_count: u32,     // Advance N frames when paused (0 = no step)
+    pub beam_speed_divisor: u32, // How many frames per beam slice (e.g., 4 for 240Hz -> 60 fields/sec)
+    pub beam_paused: bool,       // Freeze beam position for debugging
+    pub beam_step_count: u32,    // Advance N frames when paused (0 = no step)
 }
 
 pub struct Renderer {
@@ -76,7 +79,7 @@ pub struct Renderer {
     offscreen_view: wgpu::TextureView,
     crt_bind_group: wgpu::BindGroup,
     last_frame: Instant,
-    frame_count: u64,      // For beam sweep / interlacing timing
+    frame_count: u64, // For beam sweep / interlacing timing
 }
 
 impl Renderer {
@@ -147,7 +150,8 @@ impl Renderer {
             Self::create_offscreen_texture(&gpu.device, width, height, gpu.config.format);
 
         // CRT reads from burn-in output
-        let crt_bind_group = crt_pipeline.create_bind_group(&gpu.device, burnin_pipeline.output_view());
+        let crt_bind_group =
+            crt_pipeline.create_bind_group(&gpu.device, burnin_pipeline.output_view());
 
         Ok(Self {
             gpu,
@@ -329,10 +333,13 @@ impl Renderer {
         self.offscreen_view = offscreen_view;
 
         // Resize burn-in textures
-        self.burnin_pipeline.resize(&self.gpu.device, self.gpu.config.format, width, height);
+        self.burnin_pipeline
+            .resize(&self.gpu.device, self.gpu.config.format, width, height);
 
         // CRT reads from burn-in output
-        self.crt_bind_group = self.crt_pipeline.create_bind_group(&self.gpu.device, self.burnin_pipeline.output_view());
+        self.crt_bind_group = self
+            .crt_pipeline
+            .create_bind_group(&self.gpu.device, self.burnin_pipeline.output_view());
     }
 
     pub fn cell_size(&self) -> (f32, f32) {
@@ -367,10 +374,7 @@ impl Renderer {
     }
 
     /// Render a grid of cells with CRT post-processing
-    pub fn render_grid(
-        &mut self,
-        cells: &[Vec<RenderCell>],
-    ) -> Result<(), RenderError> {
+    pub fn render_grid(&mut self, cells: &[Vec<RenderCell>]) -> Result<(), RenderError> {
         let (width, height) = self.gpu.size;
         let (cell_w, cell_h) = self.atlas.cell_size();
         let ascent = self.atlas.ascent();
@@ -407,25 +411,25 @@ impl Renderer {
             width as f32,
             height as f32,
             dt,
-            false, // whole-screen mode
+            false,                   // whole-screen mode
             &[(0.0, 0.0, 1.0, 1.0)], // single full-screen pane
-            -1, // no focused pane
+            -1,                      // no focused pane
             cell_height,
-            0.03, // default curvature
-            0.3,  // default scanlines
-            0,    // row-based scanlines (default)
-            0.3,  // default bloom
-            0.05, // default glow radius
-            0.06, // default glow width
-            0.6,  // default glow intensity
-            0.05, // default static noise
-            0.05, // default flicker
-            1.0,  // default brightness
-            0.2,  // default vignette
-            false, // bezel disabled for simple render
-            1.0,  // default content scale x
-            1.0,  // default content scale y
-            [1.0, 0.7, 0.0, 1.0],  // default amber glow
+            0.03,                 // default curvature
+            0.3,                  // default scanlines
+            0,                    // row-based scanlines (default)
+            0.3,                  // default bloom
+            0.05,                 // default glow radius
+            0.06,                 // default glow width
+            0.6,                  // default glow intensity
+            0.05,                 // default static noise
+            0.05,                 // default flicker
+            1.0,                  // default brightness
+            0.2,                  // default vignette
+            false,                // bezel disabled for simple render
+            1.0,                  // default content scale x
+            1.0,                  // default content scale y
+            [1.0, 0.7, 0.0, 1.0], // default amber glow
         );
 
         let output = self.gpu.surface.get_current_texture()?;
@@ -477,7 +481,8 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            self.crt_pipeline.render(&mut render_pass, &self.crt_bind_group);
+            self.crt_pipeline
+                .render(&mut render_pass, &self.crt_bind_group);
         }
 
         self.gpu.queue.submit(std::iter::once(encoder.finish()));
@@ -539,7 +544,14 @@ impl Renderer {
                     if cell.bg[3] > 0.01 {
                         // Draw as horizontal line with thickness = cell_h
                         let y_center = cell_y + cell_h / 2.0;
-                        cell_backgrounds.push((x, y_center, x + bg_width, y_center, cell_h, cell.bg));
+                        cell_backgrounds.push((
+                            x,
+                            y_center,
+                            x + bg_width,
+                            y_center,
+                            cell_h,
+                            cell.bg,
+                        ));
                     }
 
                     if cell.c == ' ' || cell.c == '\0' {
@@ -577,7 +589,12 @@ impl Renderer {
 
         if !per_pane_crt {
             // Draw separators as lines - use glow color with transparency
-            let separator_color = [effects.glow_color[0], effects.glow_color[1], effects.glow_color[2], 0.6];
+            let separator_color = [
+                effects.glow_color[0],
+                effects.glow_color[1],
+                effects.glow_color[2],
+                0.6,
+            ];
             let separator_thickness = 1.0;
             for &(x, y, length, is_vertical) in separators {
                 if is_vertical {
@@ -594,7 +611,7 @@ impl Renderer {
                     (effects.glow_color[0] * 1.2).min(1.0),
                     (effects.glow_color[1] * 1.2).min(1.0),
                     (effects.glow_color[2] * 1.2).min(1.0),
-                    1.0
+                    1.0,
                 ];
                 let line_thickness = 2.0;
                 let edge_threshold = 5.0; // Pixels from window edge to consider "at edge"
@@ -670,10 +687,18 @@ impl Renderer {
             // Draw track (subtle background)
             all_lines.push((x, y, x, y + track_height, scrollbar_width, track_color));
             // Draw thumb (bright indicator)
-            all_lines.push((x, y + thumb_start, x, y + thumb_start + thumb_height, scrollbar_width, thumb_color));
+            all_lines.push((
+                x,
+                y + thumb_start,
+                x,
+                y + thumb_start + thumb_height,
+                scrollbar_width,
+                thumb_color,
+            ));
         }
 
-        self.line_pipeline.update_screen_size(&self.gpu.queue, width as f32, height as f32);
+        self.line_pipeline
+            .update_screen_size(&self.gpu.queue, width as f32, height as f32);
         self.line_pipeline.prepare(&self.gpu.queue, &all_lines);
 
         // Update CRT uniforms
@@ -713,7 +738,7 @@ impl Renderer {
 
         // When paused, freeze decay (set to 1.0 = no change) unless stepping
         let effective_decay = if effects.beam_paused && effects.beam_step_count == 0 {
-            1.0  // Freeze - no decay
+            1.0 // Freeze - no decay
         } else {
             decay
         };
@@ -729,12 +754,16 @@ impl Renderer {
             // Base position from integer slice counting (ensures full coverage, no gaps)
             // With interlacing: cycle is 2x longer (odd field, then even field)
             // Without interlacing: just cycle through slices
-            let cycle_length = if effects.interlace_enabled { slices_per_field * 2 } else { slices_per_field };
+            let cycle_length = if effects.interlace_enabled {
+                slices_per_field * 2
+            } else {
+                slices_per_field
+            };
             let frame_within_cycle = self.frame_count % cycle_length;
             let current_field = if effects.interlace_enabled {
                 (frame_within_cycle / slices_per_field) as u32
             } else {
-                0  // Always field 0 when not interlacing (paints all lines)
+                0 // Always field 0 when not interlacing (paints all lines)
             };
             let slice_within_field = frame_within_cycle % slices_per_field;
             let base_start = slice_within_field as f64 * slice_height;
@@ -744,8 +773,8 @@ impl Renderer {
             let t = self.frame_count as f64;
             let drift_offset = 0.05 * (t * 0.007).sin()      // slow primary oscillation
                              + 0.03 * (t * 0.023).sin()      // medium secondary
-                             + 0.02 * (t * 0.047).sin();     // faster tertiary
-            // drift_offset ranges roughly ±0.10, center around 0.5 to keep positive
+                             + 0.02 * (t * 0.047).sin(); // faster tertiary
+                                                         // drift_offset ranges roughly ±0.10, center around 0.5 to keep positive
             let drift_offset = (drift_offset + 0.5).rem_euclid(1.0);
 
             // Combine base position with drift (wrapping at 1.0)
@@ -777,10 +806,13 @@ impl Renderer {
         );
 
         // Prepare burn-in bind groups (needs current frame texture)
-        self.burnin_pipeline.prepare_bind_groups(&self.gpu.device, &self.offscreen_view);
+        self.burnin_pipeline
+            .prepare_bind_groups(&self.gpu.device, &self.offscreen_view);
 
         // Update CRT bind group to read from burn-in output
-        self.crt_bind_group = self.crt_pipeline.create_bind_group(&self.gpu.device, self.burnin_pipeline.output_view());
+        self.crt_bind_group = self
+            .crt_pipeline
+            .create_bind_group(&self.gpu.device, self.burnin_pipeline.output_view());
 
         let output = self.gpu.surface.get_current_texture()?;
         let screen_view = output

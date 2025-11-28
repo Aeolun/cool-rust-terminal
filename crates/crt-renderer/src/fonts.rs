@@ -9,19 +9,29 @@ static IBM_BIOS: &[u8] = include_bytes!("../../../assets/fonts/1981-ibm-pc/PxPlu
 static IBM_3278: &[u8] = include_bytes!("../../../assets/fonts/1971-ibm-3278/3270-Regular.ttf");
 static APPLE2: &[u8] = include_bytes!("../../../assets/fonts/1977-apple2/PrintChar21.ttf");
 static COMMODORE_PET: &[u8] = include_bytes!("../../../assets/fonts/1977-commodore-pet/PetMe.ttf");
-static COMMODORE_64: &[u8] = include_bytes!("../../../assets/fonts/1982-commodore64/C64_Pro_Mono-STYLE.ttf");
-static ATARI: &[u8] = include_bytes!("../../../assets/fonts/1979-atari-400-800/AtariClassic-Regular.ttf");
-static TERMINUS: &[u8] = include_bytes!("../../../assets/fonts/modern-terminus/TerminusTTF-4.46.0.ttf");
-static FIXEDSYS: &[u8] = include_bytes!("../../../assets/fonts/modern-fixedsys-excelsior/FSEX301-L2.ttf");
-static PROGGY_TINY: &[u8] = include_bytes!("../../../assets/fonts/modern-proggy-tiny/ProggyTiny.ttf");
-static PRO_FONT: &[u8] = include_bytes!("../../../assets/fonts/modern-pro-font-win-tweaked/ProFontWindows.ttf");
+static COMMODORE_64: &[u8] =
+    include_bytes!("../../../assets/fonts/1982-commodore64/C64_Pro_Mono-STYLE.ttf");
+static ATARI: &[u8] =
+    include_bytes!("../../../assets/fonts/1979-atari-400-800/AtariClassic-Regular.ttf");
+static TERMINUS: &[u8] =
+    include_bytes!("../../../assets/fonts/modern-terminus/TerminusTTF-4.46.0.ttf");
+static FIXEDSYS: &[u8] =
+    include_bytes!("../../../assets/fonts/modern-fixedsys-excelsior/FSEX301-L2.ttf");
+static PROGGY_TINY: &[u8] =
+    include_bytes!("../../../assets/fonts/modern-proggy-tiny/ProggyTiny.ttf");
+static PRO_FONT: &[u8] =
+    include_bytes!("../../../assets/fonts/modern-pro-font-win-tweaked/ProFontWindows.ttf");
 static HERMIT: &[u8] = include_bytes!("../../../assets/fonts/modern-hermit/Hermit-medium.otf");
-static INCONSOLATA: &[u8] = include_bytes!("../../../assets/fonts/modern-inconsolata/Inconsolata.otf");
+static INCONSOLATA: &[u8] =
+    include_bytes!("../../../assets/fonts/modern-inconsolata/Inconsolata.otf");
 
 // Fallback fonts with good unicode coverage
-static FALLBACK_HACK: &[u8] = include_bytes!("../../../assets/fonts/fallback-hack/Hack-Regular.ttf");
-static FALLBACK_SYMBOLS: &[u8] = include_bytes!("../../../assets/fonts/fallback-symbols/NotoSansSymbols2-Regular.ttf");
-static FALLBACK_EMOJI: &[u8] = include_bytes!("../../../assets/fonts/fallback-emoji/NotoEmoji-VariableFont_wght.ttf");
+static FALLBACK_HACK: &[u8] =
+    include_bytes!("../../../assets/fonts/fallback-hack/Hack-Regular.ttf");
+static FALLBACK_SYMBOLS: &[u8] =
+    include_bytes!("../../../assets/fonts/fallback-symbols/NotoSansSymbols2-Regular.ttf");
+static FALLBACK_EMOJI: &[u8] =
+    include_bytes!("../../../assets/fonts/fallback-emoji/NotoEmoji-VariableFont_wght.ttf");
 static FALLBACK_UNIFONT: &[u8] = include_bytes!("../../../assets/bdf_fonts/unifont-17.0.03.bdf");
 
 // Embed BDF (bitmap) fonts at compile time
@@ -32,7 +42,8 @@ static BDF_FIXED_8X13: &[u8] = include_bytes!("../../../assets/bdf_fonts/8x13.bd
 static BDF_FIXED_9X15: &[u8] = include_bytes!("../../../assets/bdf_fonts/9x15.bdf");
 static BDF_FIXED_9X18: &[u8] = include_bytes!("../../../assets/bdf_fonts/9x18.bdf");
 static BDF_FIXED_10X20: &[u8] = include_bytes!("../../../assets/bdf_fonts/10x20.bdf");
-static BDF_AMSTRAD_CPC: &[u8] = include_bytes!("../../../assets/bdf_fonts/amstrad_cpc_extended.bdf");
+static BDF_AMSTRAD_CPC: &[u8] =
+    include_bytes!("../../../assets/bdf_fonts/amstrad_cpc_extended.bdf");
 static BDF_PROFONT_12: &[u8] = include_bytes!("../../../assets/bdf_fonts/profont12.bdf");
 static BDF_PROFONT_17: &[u8] = include_bytes!("../../../assets/bdf_fonts/profont17.bdf");
 static BDF_COURIER_12: &[u8] = include_bytes!("../../../assets/bdf_fonts/courR12.bdf");

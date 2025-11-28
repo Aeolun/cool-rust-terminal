@@ -10,14 +10,9 @@ use crate::bdf::BdfFont;
 /// The font source - either a rasterized TTF or a pixel-perfect BDF
 enum FontSource {
     /// TTF font with fontdue rasterizer
-    Ttf {
-        font: Font,
-        font_size: f32,
-    },
+    Ttf { font: Font, font_size: f32 },
     /// BDF bitmap font (no rasterization needed)
-    Bdf {
-        font: BdfFont,
-    },
+    Bdf { font: BdfFont },
 }
 
 pub struct GlyphAtlas {
@@ -77,14 +72,14 @@ impl GlyphAtlas {
             .map_err(|e| AtlasError::FontLoadError(e.to_string()))?;
 
         // Get line metrics for proper baseline positioning
-        let line_metrics = font
-            .horizontal_line_metrics(font_size)
-            .unwrap_or(fontdue::LineMetrics {
-                ascent: font_size * 0.8,
-                descent: font_size * -0.2,
-                line_gap: 0.0,
-                new_line_size: font_size,
-            });
+        let line_metrics =
+            font.horizontal_line_metrics(font_size)
+                .unwrap_or(fontdue::LineMetrics {
+                    ascent: font_size * 0.8,
+                    descent: font_size * -0.2,
+                    line_gap: 0.0,
+                    new_line_size: font_size,
+                });
 
         // Calculate cell size from 'M' character
         let metrics = font.metrics('M', font_size);
@@ -119,8 +114,8 @@ impl GlyphAtlas {
 
     /// Create a new atlas from BDF font data
     pub fn from_bdf(bdf_data: &[u8]) -> Result<Self, AtlasError> {
-        let font = BdfFont::parse(bdf_data)
-            .map_err(|e| AtlasError::FontLoadError(e.to_string()))?;
+        let font =
+            BdfFont::parse(bdf_data).map_err(|e| AtlasError::FontLoadError(e.to_string()))?;
 
         let cell_width = font.cell_width() as f32;
         let cell_height = font.cell_height() as f32;
@@ -136,7 +131,11 @@ impl GlyphAtlas {
 
         tracing::info!(
             "Loaded BDF font: {}x{} cell, ascent={}, descent={}, {} glyphs",
-            cell_width, cell_height, font.ascent, font.descent, font.glyphs.len()
+            cell_width,
+            cell_height,
+            font.ascent,
+            font.descent,
+            font.glyphs.len()
         );
 
         Ok(Self {
@@ -178,14 +177,15 @@ impl GlyphAtlas {
         let base_size = self.primary_font_size();
 
         // Calculate font size for fallback to match primary cell height
-        let fallback_line_metrics = fallback
-            .horizontal_line_metrics(base_size)
-            .unwrap_or(fontdue::LineMetrics {
-                ascent: base_size * 0.8,
-                descent: base_size * -0.2,
-                line_gap: 0.0,
-                new_line_size: base_size,
-            });
+        let fallback_line_metrics =
+            fallback
+                .horizontal_line_metrics(base_size)
+                .unwrap_or(fontdue::LineMetrics {
+                    ascent: base_size * 0.8,
+                    descent: base_size * -0.2,
+                    line_gap: 0.0,
+                    new_line_size: base_size,
+                });
 
         // Scale fallback to match primary cell height
         let fallback_natural_height = fallback_line_metrics.ascent - fallback_line_metrics.descent;
@@ -213,14 +213,15 @@ impl GlyphAtlas {
         let base_size = self.primary_font_size();
 
         // Calculate font size for symbols to match primary cell height
-        let symbols_line_metrics = symbols
-            .horizontal_line_metrics(base_size)
-            .unwrap_or(fontdue::LineMetrics {
-                ascent: base_size * 0.8,
-                descent: base_size * -0.2,
-                line_gap: 0.0,
-                new_line_size: base_size,
-            });
+        let symbols_line_metrics =
+            symbols
+                .horizontal_line_metrics(base_size)
+                .unwrap_or(fontdue::LineMetrics {
+                    ascent: base_size * 0.8,
+                    descent: base_size * -0.2,
+                    line_gap: 0.0,
+                    new_line_size: base_size,
+                });
 
         let symbols_natural_height = symbols_line_metrics.ascent - symbols_line_metrics.descent;
         let scale = self.cell_height / symbols_natural_height;
@@ -245,14 +246,15 @@ impl GlyphAtlas {
         let base_size = self.primary_font_size();
 
         // Calculate font size for emoji to match primary cell height
-        let emoji_line_metrics = emoji
-            .horizontal_line_metrics(base_size)
-            .unwrap_or(fontdue::LineMetrics {
-                ascent: base_size * 0.8,
-                descent: base_size * -0.2,
-                line_gap: 0.0,
-                new_line_size: base_size,
-            });
+        let emoji_line_metrics =
+            emoji
+                .horizontal_line_metrics(base_size)
+                .unwrap_or(fontdue::LineMetrics {
+                    ascent: base_size * 0.8,
+                    descent: base_size * -0.2,
+                    line_gap: 0.0,
+                    new_line_size: base_size,
+                });
 
         let emoji_natural_height = emoji_line_metrics.ascent - emoji_line_metrics.descent;
         let scale = self.cell_height / emoji_natural_height;
@@ -280,8 +282,11 @@ impl GlyphAtlas {
 
         tracing::info!(
             "BDF fallback font configured: {}x{} cell, {} glyphs (scaling to {:.0}x{:.0})",
-            cell_width, cell_height, font.glyphs.len(),
-            self.cell_width, self.cell_height
+            cell_width,
+            cell_height,
+            font.glyphs.len(),
+            self.cell_width,
+            self.cell_height
         );
 
         self.bdf_fallback = Some(BdfFallback {
@@ -362,92 +367,202 @@ impl GlyphAtlas {
 
         // Rasterize glyph from appropriate font
         // Returns (width, height, xmin, ymin, advance, bitmap, source_name)
-        let (width, height, xmin, ymin, advance, bitmap, source_name): (usize, usize, i32, i32, f32, Vec<u8>, &str) =
-            if primary_has {
-                match &self.source {
-                    FontSource::Ttf { font, font_size } => {
-                        let (m, b) = font.rasterize(c, *font_size);
-                        // If primary returned empty bitmap, try fallbacks
-                        if (m.width == 0 || m.height == 0) && c != ' ' {
-                            if fallback_has {
-                                let fallback = self.fallback_font.as_ref().unwrap();
-                                let (fm, fb) = fallback.rasterize(c, self.fallback_font_size);
-                                (fm.width, fm.height, fm.xmin, fm.ymin, self.cell_width, fb, "fallback (primary empty)")
-                            } else if symbols_has {
-                                let symbols = self.symbols_font.as_ref().unwrap();
-                                let (sm, sb) = symbols.rasterize(c, self.symbols_font_size);
-                                (sm.width, sm.height, sm.xmin, sm.ymin, self.cell_width, sb, "symbols (primary empty)")
-                            } else if bdf_fallback_has {
-                                self.render_bdf_fallback_glyph(c, is_wide, "bdf fallback (primary empty)")
-                            } else if emoji_has {
-                                let emoji = self.emoji_font.as_ref().unwrap();
-                                let (em, eb) = emoji.rasterize(c, self.emoji_font_size);
-                                (em.width, em.height, em.xmin, em.ymin, self.cell_width, eb, "emoji (primary empty)")
-                            } else {
-                                (m.width, m.height, m.xmin, m.ymin, m.advance_width, b, "primary")
-                            }
+        let (width, height, xmin, ymin, advance, bitmap, source_name): (
+            usize,
+            usize,
+            i32,
+            i32,
+            f32,
+            Vec<u8>,
+            &str,
+        ) = if primary_has {
+            match &self.source {
+                FontSource::Ttf { font, font_size } => {
+                    let (m, b) = font.rasterize(c, *font_size);
+                    // If primary returned empty bitmap, try fallbacks
+                    if (m.width == 0 || m.height == 0) && c != ' ' {
+                        if fallback_has {
+                            let fallback = self.fallback_font.as_ref().unwrap();
+                            let (fm, fb) = fallback.rasterize(c, self.fallback_font_size);
+                            (
+                                fm.width,
+                                fm.height,
+                                fm.xmin,
+                                fm.ymin,
+                                self.cell_width,
+                                fb,
+                                "fallback (primary empty)",
+                            )
+                        } else if symbols_has {
+                            let symbols = self.symbols_font.as_ref().unwrap();
+                            let (sm, sb) = symbols.rasterize(c, self.symbols_font_size);
+                            (
+                                sm.width,
+                                sm.height,
+                                sm.xmin,
+                                sm.ymin,
+                                self.cell_width,
+                                sb,
+                                "symbols (primary empty)",
+                            )
+                        } else if bdf_fallback_has {
+                            self.render_bdf_fallback_glyph(
+                                c,
+                                is_wide,
+                                "bdf fallback (primary empty)",
+                            )
+                        } else if emoji_has {
+                            let emoji = self.emoji_font.as_ref().unwrap();
+                            let (em, eb) = emoji.rasterize(c, self.emoji_font_size);
+                            (
+                                em.width,
+                                em.height,
+                                em.xmin,
+                                em.ymin,
+                                self.cell_width,
+                                eb,
+                                "emoji (primary empty)",
+                            )
                         } else {
-                            (m.width, m.height, m.xmin, m.ymin, m.advance_width, b, "primary")
+                            (
+                                m.width,
+                                m.height,
+                                m.xmin,
+                                m.ymin,
+                                m.advance_width,
+                                b,
+                                "primary",
+                            )
                         }
+                    } else {
+                        (
+                            m.width,
+                            m.height,
+                            m.xmin,
+                            m.ymin,
+                            m.advance_width,
+                            b,
+                            "primary",
+                        )
                     }
-                    FontSource::Bdf { font } => {
-                        let glyph = font.get_char(c).unwrap();
+                }
+                FontSource::Bdf { font } => {
+                    let glyph = font.get_char(c).unwrap();
+                    let bitmap = glyph.render();
+                    // BDF offset_y is from baseline (positive = above), fontdue ymin is from baseline (positive = above)
+                    (
+                        glyph.width as usize,
+                        glyph.height as usize,
+                        glyph.offset_x,
+                        glyph.offset_y,
+                        glyph.dwidth_x as f32,
+                        bitmap,
+                        "primary (bdf)",
+                    )
+                }
+            }
+        } else if fallback_has {
+            // Primary doesn't have it, try fallback
+            let fallback = self.fallback_font.as_ref().unwrap();
+            let (m, b) = fallback.rasterize(c, self.fallback_font_size);
+            (
+                m.width,
+                m.height,
+                m.xmin,
+                m.ymin,
+                self.cell_width,
+                b,
+                "fallback",
+            )
+        } else if symbols_has {
+            // Try symbols font
+            let symbols = self.symbols_font.as_ref().unwrap();
+            let (m, b) = symbols.rasterize(c, self.symbols_font_size);
+            (
+                m.width,
+                m.height,
+                m.xmin,
+                m.ymin,
+                self.cell_width,
+                b,
+                "symbols",
+            )
+        } else if bdf_fallback_has {
+            // Try BDF fallback (e.g., Unifont for comprehensive Unicode coverage)
+            self.render_bdf_fallback_glyph(c, is_wide, "bdf fallback")
+        } else if emoji_has {
+            // Try emoji font
+            let emoji = self.emoji_font.as_ref().unwrap();
+            let (m, b) = emoji.rasterize(c, self.emoji_font_size);
+            (
+                m.width,
+                m.height,
+                m.xmin,
+                m.ymin,
+                self.cell_width,
+                b,
+                "emoji",
+            )
+        } else {
+            // No font has this glyph - use '?' from primary or fallback
+            match &self.source {
+                FontSource::Ttf { font, font_size } => {
+                    let (m, b) = font.rasterize('?', *font_size);
+                    (
+                        m.width,
+                        m.height,
+                        m.xmin,
+                        m.ymin,
+                        m.advance_width,
+                        b,
+                        "? (no font has glyph)",
+                    )
+                }
+                FontSource::Bdf { font } => {
+                    // Try to get '?' from BDF, otherwise use fallback
+                    if let Some(glyph) = font.get_char('?') {
                         let bitmap = glyph.render();
-                        // BDF offset_y is from baseline (positive = above), fontdue ymin is from baseline (positive = above)
-                        (glyph.width as usize, glyph.height as usize,
-                         glyph.offset_x, glyph.offset_y,
-                         glyph.dwidth_x as f32, bitmap, "primary (bdf)")
+                        (
+                            glyph.width as usize,
+                            glyph.height as usize,
+                            glyph.offset_x,
+                            glyph.offset_y,
+                            glyph.dwidth_x as f32,
+                            bitmap,
+                            "? (bdf)",
+                        )
+                    } else if let Some(fallback) = &self.fallback_font {
+                        let (m, b) = fallback.rasterize('?', self.fallback_font_size);
+                        (
+                            m.width,
+                            m.height,
+                            m.xmin,
+                            m.ymin,
+                            self.cell_width,
+                            b,
+                            "? (fallback)",
+                        )
+                    } else {
+                        // Return empty glyph
+                        (0, 0, 0, 0, self.cell_width, vec![], "? (empty)")
                     }
                 }
-            } else if fallback_has {
-                // Primary doesn't have it, try fallback
-                let fallback = self.fallback_font.as_ref().unwrap();
-                let (m, b) = fallback.rasterize(c, self.fallback_font_size);
-                (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "fallback")
-            } else if symbols_has {
-                // Try symbols font
-                let symbols = self.symbols_font.as_ref().unwrap();
-                let (m, b) = symbols.rasterize(c, self.symbols_font_size);
-                (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "symbols")
-            } else if bdf_fallback_has {
-                // Try BDF fallback (e.g., Unifont for comprehensive Unicode coverage)
-                self.render_bdf_fallback_glyph(c, is_wide, "bdf fallback")
-            } else if emoji_has {
-                // Try emoji font
-                let emoji = self.emoji_font.as_ref().unwrap();
-                let (m, b) = emoji.rasterize(c, self.emoji_font_size);
-                (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "emoji")
-            } else {
-                // No font has this glyph - use '?' from primary or fallback
-                match &self.source {
-                    FontSource::Ttf { font, font_size } => {
-                        let (m, b) = font.rasterize('?', *font_size);
-                        (m.width, m.height, m.xmin, m.ymin, m.advance_width, b, "? (no font has glyph)")
-                    }
-                    FontSource::Bdf { font } => {
-                        // Try to get '?' from BDF, otherwise use fallback
-                        if let Some(glyph) = font.get_char('?') {
-                            let bitmap = glyph.render();
-                            (glyph.width as usize, glyph.height as usize,
-                             glyph.offset_x, glyph.offset_y,
-                             glyph.dwidth_x as f32, bitmap, "? (bdf)")
-                        } else if let Some(fallback) = &self.fallback_font {
-                            let (m, b) = fallback.rasterize('?', self.fallback_font_size);
-                            (m.width, m.height, m.xmin, m.ymin, self.cell_width, b, "? (fallback)")
-                        } else {
-                            // Return empty glyph
-                            (0, 0, 0, 0, self.cell_width, vec![], "? (empty)")
-                        }
-                    }
-                }
-            };
+            }
+        };
 
         // Log non-ASCII glyph resolution (only on first rasterization, not cached)
         if !c.is_ascii() {
             tracing::debug!(
                 "Glyph {:?} (U+{:04X}): source={}, size={}x{}, offset=({},{}), cell={:.1}x{:.1}",
-                c, c as u32, source_name, width, height,
-                xmin, ymin, self.cell_width, self.cell_height
+                c,
+                c as u32,
+                source_name,
+                width,
+                height,
+                xmin,
+                ymin,
+                self.cell_width,
+                self.cell_height
             );
         }
 
@@ -513,7 +628,12 @@ impl GlyphAtlas {
     /// Render a glyph from the BDF fallback font, scaling to match primary cell size.
     /// For wide characters (CJK, etc.), scales to 2x cell width.
     /// Returns (width, height, xmin, ymin, advance, bitmap, source_name).
-    fn render_bdf_fallback_glyph(&self, c: char, is_wide: bool, source_name: &'static str) -> (usize, usize, i32, i32, f32, Vec<u8>, &'static str) {
+    fn render_bdf_fallback_glyph(
+        &self,
+        c: char,
+        is_wide: bool,
+        source_name: &'static str,
+    ) -> (usize, usize, i32, i32, f32, Vec<u8>, &'static str) {
         let fb = self.bdf_fallback.as_ref().unwrap();
         let glyph = fb.font.get_char(c).unwrap();
 

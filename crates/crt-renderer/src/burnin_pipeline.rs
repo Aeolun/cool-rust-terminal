@@ -10,11 +10,11 @@ struct BurnInUniforms {
     decay: f32,
     brightness: f32,
     // Beam sweep simulation
-    beam_y_start: f32,    // 0.0-1.0, start of current beam band
-    beam_y_end: f32,      // 0.0-1.0, end of current beam band
-    current_field: u32,   // 0 = even lines, 1 = odd lines
+    beam_y_start: f32,      // 0.0-1.0, start of current beam band
+    beam_y_end: f32,        // 0.0-1.0, end of current beam band
+    current_field: u32,     // 0 = even lines, 1 = odd lines
     interlace_enabled: u32, // 0 = disabled, 1 = enabled
-    screen_height: f32,   // Screen height in pixels (for scanline calc)
+    screen_height: f32,     // Screen height in pixels (for scanline calc)
     _padding: f32,
 }
 
@@ -45,10 +45,10 @@ impl BurnInPipeline {
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Burn-in Uniform Buffer"),
             contents: bytemuck::cast_slice(&[BurnInUniforms {
-                decay: 0.92,      // Phosphor decay rate
-                brightness: 1.0,  // Current frame brightness
+                decay: 0.92,     // Phosphor decay rate
+                brightness: 1.0, // Current frame brightness
                 beam_y_start: 0.0,
-                beam_y_end: 1.0,  // Full screen by default (no beam simulation)
+                beam_y_end: 1.0, // Full screen by default (no beam simulation)
                 current_field: 0,
                 interlace_enabled: 0,
                 screen_height: 600.0,
@@ -186,7 +186,8 @@ impl BurnInPipeline {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
         };
@@ -199,7 +200,13 @@ impl BurnInPipeline {
         ([tex0, tex1], [view0, view1])
     }
 
-    pub fn resize(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, width: u32, height: u32) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) {
         let (textures, views) = Self::create_textures(device, format, width, height);
         self.textures = textures;
         self.views = views;
@@ -208,7 +215,11 @@ impl BurnInPipeline {
 
     /// Create bind groups for a render pass
     /// current_frame_view: the texture view of the current rendered frame
-    pub fn prepare_bind_groups(&mut self, device: &wgpu::Device, current_frame_view: &wgpu::TextureView) {
+    pub fn prepare_bind_groups(
+        &mut self,
+        device: &wgpu::Device,
+        current_frame_view: &wgpu::TextureView,
+    ) {
         // We write to current_target, read from the other one
         let read_idx = 1 - self.current_target;
 
