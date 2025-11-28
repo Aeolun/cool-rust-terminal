@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  APP_NAME: cool-rust-term
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libwayland-dev \
+            libgtk-3-dev \
+            dpkg \
+            rpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build release binary
+        run: cargo build --release --package crt-app
+
+      - name: Create .deb package
+        run: cargo deb --package crt-app --no-build
+
+      - name: Create tarball
+        run: |
+          mkdir -p dist
+          cp target/release/${{ env.APP_NAME }} dist/
+          cp README.md LICENSE dist/
+          cd dist && tar -czvf ../cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz *
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            target/debian/*.deb
+            cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
+
+  build-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle
+
+      - name: Build release binary
+        run: cargo build --release --package crt-app --target ${{ matrix.target }}
+
+      - name: Create app bundle
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          APP_DIR="Cool Rust Term.app"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+
+          # Copy binary
+          cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} "$APP_DIR/Contents/MacOS/"
+
+          # Copy icon
+          cp assets/icon.icns "$APP_DIR/Contents/Resources/"
+
+          # Create Info.plist with version from tag
+          cat > "$APP_DIR/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleName</key>
+              <string>Cool Rust Term</string>
+              <key>CFBundleDisplayName</key>
+              <string>Cool Rust Term</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.bartriepe.cool-rust-term</string>
+              <key>CFBundleVersion</key>
+              <string>${VERSION}</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${VERSION}</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleExecutable</key>
+              <string>cool-rust-term</string>
+              <key>CFBundleIconFile</key>
+              <string>icon</string>
+              <key>LSMinimumSystemVersion</key>
+              <string>10.13</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+              <key>NSSupportsAutomaticGraphicsSwitching</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Create DMG
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          ARCH=$(echo "${{ matrix.target }}" | cut -d'-' -f1)
+          hdiutil create -volname "Cool Rust Term" -srcfolder "Cool Rust Term.app" -ov -format UDZO "cool-rust-term-${VERSION}-macos-${ARCH}.dmg"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.target }}
+          path: "*.dmg"
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build release binary
+        run: cargo build --release --package crt-app
+
+      - name: Create distribution folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          Copy-Item "target/release/${{ env.APP_NAME }}.exe" -Destination dist/
+          Copy-Item README.md -Destination dist/
+          Copy-Item LICENSE -Destination dist/
+
+      - name: Create ZIP archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/* -DestinationPath cool-rust-term-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: cool-rust-term-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/linux-artifacts/*.deb
+            artifacts/linux-artifacts/*.tar.gz
+            artifacts/macos-x86_64-apple-darwin/*.dmg
+            artifacts/macos-aarch64-apple-darwin/*.dmg
+            artifacts/windows-artifacts/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}

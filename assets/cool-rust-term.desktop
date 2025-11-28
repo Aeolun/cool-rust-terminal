@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Cool Rust Term
+Comment=CRT-styled terminal emulator
+Exec=cool-rust-term
+Icon=cool-rust-term
+Terminal=false
+Type=Application
+Categories=System;TerminalEmulator;
+Keywords=terminal;console;command;prompt;shell;retro;crt;
+StartupNotify=true

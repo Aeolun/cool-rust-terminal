@@ -17,6 +17,25 @@ category = "public.app-category.developer-tools"
 short_description = "CRT-style terminal emulator"
 copyright = "Copyright © 2024 Bart Riepe. GPL-3.0 License."
 
+[package.metadata.deb]
+name = "cool-rust-term"
+maintainer = "Bart Riepe"
+copyright = "2024, Bart Riepe"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+A CRT-styled terminal emulator written in Rust, featuring \
+barrel distortion, scanlines, phosphor bloom, burn-in effects, \
+and multi-pane support."""
+section = "x11"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["../../target/release/cool-rust-term", "usr/bin/", "755"],
+    ["../../assets/icon.png", "usr/share/icons/hicolor/256x256/apps/cool-rust-term.png", "644"],
+    ["../../assets/cool-rust-term.desktop", "usr/share/applications/cool-rust-term.desktop", "644"],
+    ["../../README.md", "usr/share/doc/cool-rust-term/README.md", "644"],
+]
+
 [dependencies]
 crt-core = { workspace = true }
 crt-terminal = { workspace = true }
