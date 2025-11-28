@@ -165,7 +165,7 @@ struct App {
     clipboard: Option<Clipboard>,
     last_grid: Vec<Vec<char>>,
     last_resize: Option<Instant>,
-    last_scroll: Option<Instant>,
+    last_scroll: HashMap<PaneId, Instant>,
     last_frame: Instant,
     frame_duration: Duration,
     fps_samples: [f32; 60],
@@ -196,7 +196,7 @@ impl App {
             clipboard: Clipboard::new().ok(),
             last_grid: Vec::new(),
             last_resize: None,
-            last_scroll: None,
+            last_scroll: HashMap::new(),
             last_frame: Instant::now(),
             frame_duration: Duration::from_nanos(1_000_000_000 / (DEFAULT_FPS * 2) as u64),
             fps_samples: [0.0; 60],
@@ -761,67 +761,67 @@ impl App {
             })
             .collect();
 
-        // Calculate scrollbar opacity based on time since last scroll
-        let scrollbar_opacity = self.last_scroll.map(|t| {
-            let elapsed = t.elapsed();
-            if elapsed < SCROLLBAR_VISIBLE_DURATION {
-                1.0_f32
-            } else if elapsed < SCROLLBAR_VISIBLE_DURATION + SCROLLBAR_FADE_DURATION {
-                let fade_elapsed = elapsed - SCROLLBAR_VISIBLE_DURATION;
-                1.0 - (fade_elapsed.as_secs_f32() / SCROLLBAR_FADE_DURATION.as_secs_f32())
-            } else {
-                0.0
-            }
-        }).unwrap_or(0.0);
-
-        // Calculate scrollbars for each pane
+        // Calculate scrollbars for each pane (with per-pane opacity based on scroll time)
         // Each scrollbar is (x, y, height, thumb_start, thumb_height, opacity) in pixels
-        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = if scrollbar_opacity > 0.001 {
-            self.layout
-                .panes()
-                .iter()
-                .filter_map(|pane_id| {
-                    let rect = rects.get(pane_id)?;
-                    let terminal = self.terminals.get(pane_id)?;
+        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = self.layout
+            .panes()
+            .iter()
+            .filter_map(|pane_id| {
+                let rect = rects.get(pane_id)?;
+                let terminal = self.terminals.get(pane_id)?;
 
-                    let history = terminal.history_size();
-                    if history == 0 {
-                        return None; // No scrollback, no scrollbar
-                    }
+                let history = terminal.history_size();
+                if history == 0 {
+                    return None; // No scrollback, no scrollbar
+                }
 
-                    let offset = terminal.display_offset();
-                    let (_, rows) = terminal.size();
-                    let total_lines = history + rows as usize;
-
-                    // Scrollbar position (right edge of pane, with some margin)
-                    let pane_x = rect.x * win_width as f32;
-                    let pane_y = rect.y * win_height as f32 + PANE_PADDING;
-                    let pane_h = rect.height * win_height as f32 - PANE_PADDING * 2.0;
-                    let pane_w = rect.width * win_width as f32;
-
-                    let scrollbar_x = pane_x + pane_w - PANE_PADDING - 2.0; // 2px from right edge
-                    let track_height = pane_h;
-
-                    // Thumb size proportional to visible portion
-                    let visible_fraction = (rows as f32) / (total_lines as f32);
-                    let thumb_height = (track_height * visible_fraction).max(20.0); // Minimum 20px
-
-                    // Thumb position: offset 0 = at bottom, offset = history = at top
-                    // When offset = 0, thumb should be at bottom (track_height - thumb_height)
-                    // When offset = history, thumb should be at top (0)
-                    let scroll_fraction = if history > 0 {
-                        offset as f32 / history as f32
+                // Calculate per-pane scrollbar opacity
+                let scrollbar_opacity = self.last_scroll.get(pane_id).map(|t| {
+                    let elapsed = t.elapsed();
+                    if elapsed < SCROLLBAR_VISIBLE_DURATION {
+                        1.0_f32
+                    } else if elapsed < SCROLLBAR_VISIBLE_DURATION + SCROLLBAR_FADE_DURATION {
+                        let fade_elapsed = elapsed - SCROLLBAR_VISIBLE_DURATION;
+                        1.0 - (fade_elapsed.as_secs_f32() / SCROLLBAR_FADE_DURATION.as_secs_f32())
                     } else {
                         0.0
-                    };
-                    let thumb_start = (1.0 - scroll_fraction) * (track_height - thumb_height);
+                    }
+                }).unwrap_or(0.0);
 
-                    Some((scrollbar_x, pane_y, track_height, thumb_start, thumb_height, scrollbar_opacity))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                if scrollbar_opacity < 0.001 {
+                    return None; // Scrollbar fully faded
+                }
+
+                let offset = terminal.display_offset();
+                let (_, rows) = terminal.size();
+                let total_lines = history + rows as usize;
+
+                // Scrollbar position (right edge of pane, with some margin)
+                let pane_x = rect.x * win_width as f32;
+                let pane_y = rect.y * win_height as f32 + PANE_PADDING;
+                let pane_h = rect.height * win_height as f32 - PANE_PADDING * 2.0;
+                let pane_w = rect.width * win_width as f32;
+
+                let scrollbar_x = pane_x + pane_w - PANE_PADDING - 2.0; // 2px from right edge
+                let track_height = pane_h;
+
+                // Thumb size proportional to visible portion
+                let visible_fraction = (rows as f32) / (total_lines as f32);
+                let thumb_height = (track_height * visible_fraction).max(20.0); // Minimum 20px
+
+                // Thumb position: offset 0 = at bottom, offset = history = at top
+                // When offset = 0, thumb should be at bottom (track_height - thumb_height)
+                // When offset = history, thumb should be at top (0)
+                let scroll_fraction = if history > 0 {
+                    offset as f32 / history as f32
+                } else {
+                    0.0
+                };
+                let thumb_start = (1.0 - scroll_fraction) * (track_height - thumb_height);
+
+                Some((scrollbar_x, pane_y, track_height, thumb_start, thumb_height, scrollbar_opacity))
+            })
+            .collect();
 
         // If config UI is visible, render it instead of terminals
         if self.config_ui.visible {
@@ -1190,7 +1190,7 @@ impl ApplicationHandler for App {
                     };
                     if lines != 0 {
                         terminal.scroll(lines);
-                        self.last_scroll = Some(Instant::now());
+                        self.last_scroll.insert(focused, Instant::now());
 
                         // Update selection end if actively selecting while scrolling
                         if self.selection.active {
@@ -1299,7 +1299,7 @@ impl ApplicationHandler for App {
                         let focused = self.layout.focused_pane();
                         if let Some(terminal) = self.terminals.get(&focused) {
                             terminal.scroll_page_up();
-                            self.last_scroll = Some(Instant::now());
+                            self.last_scroll.insert(focused, Instant::now());
                         }
                         return;
                     }
@@ -1307,7 +1307,7 @@ impl ApplicationHandler for App {
                         let focused = self.layout.focused_pane();
                         if let Some(terminal) = self.terminals.get(&focused) {
                             terminal.scroll_page_down();
-                            self.last_scroll = Some(Instant::now());
+                            self.last_scroll.insert(focused, Instant::now());
                         }
                         return;
                     }
