@@ -1,9 +1,13 @@
 # Cool Rust Terminal
 
+<img src="assets/icon.png" width="128" align="right" alt="Cool Rust Terminal icon">
+
 A CRT-styled terminal emulator written in Rust, inspired by [cool-retro-term](https://github.com/Swordfish90/cool-retro-term).
 
 ![Cool Rust Terminal](https://img.shields.io/badge/status-work%20in%20progress-yellow)
 [![Built with Claude Code](https://img.shields.io/badge/Built%20with-Claude%20Code-D97757?logo=claude&logoColor=white)](https://claude.ai/code)
+
+![Screenshot](screenshot.png)
 
 ## Features
 
@@ -47,7 +51,19 @@ A CRT-styled terminal emulator written in Rust, inspired by [cool-retro-term](ht
 | `Shift+PageUp/Down` | Scroll history |
 | Mouse wheel | Scroll history |
 
-## Building
+## Installation
+
+The easiest way to install Cool Rust Terminal is via the install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Aeolun/cool-rust-terminal/main/install.sh | bash
+```
+
+This works on **Linux** (x86_64) and **macOS** (Intel & Apple Silicon). On Linux, it installs the binary and creates a desktop launcher. On macOS, it installs the app to `/Applications`.
+
+For Windows, download the latest `.zip` from [Releases](https://github.com/Aeolun/cool-rust-terminal/releases).
+
+## Building from Source
 
 Requires Rust 1.70+ and a GPU with Vulkan/Metal/DX12 support.
 
@@ -61,7 +77,7 @@ cargo build --release
 After cloning, set up git hooks for automatic formatting and lint checks:
 
 ```bash
-make setup
+just setup
 ```
 
 This runs `cargo fmt` and `cargo clippy` before each commit.
