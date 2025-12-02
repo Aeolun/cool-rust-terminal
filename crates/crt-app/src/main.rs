@@ -122,7 +122,8 @@ impl Selection {
 
     /// Check if a buffer-relative position is within the selection
     fn contains(&self, col: usize, row: i32) -> bool {
-        if !self.active && self.start.row == self.end.row && self.start.col == self.end.col {
+        // Never highlight a single cell (click without drag)
+        if self.start.row == self.end.row && self.start.col == self.end.col {
             return false;
         }
         let (start, end) = self.normalized();
@@ -145,6 +146,7 @@ const RESIZE_INDICATOR_DURATION: Duration = Duration::from_millis(1000);
 const SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(1500);
 const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
 const DEFAULT_FPS: u32 = 60; // Fallback if we can't detect refresh rate
+const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 
 // Startup hint timing (after power-on animation)
 const POWERON_DURATION: f32 = 1.05; // Must match shader's POWERON_TOTAL
@@ -176,6 +178,9 @@ struct App {
     beam_step_held: bool,    // Is step key currently held
     beam_step_delay_ms: u32, // Delay between steps when holding (in ms)
     beam_step_last: Instant, // Last time we stepped
+    last_click_time: Option<Instant>,
+    last_click_pos: Option<CellPos>,
+    click_count: u8,
 }
 
 impl App {
@@ -207,6 +212,9 @@ impl App {
             beam_step_held: false,
             beam_step_delay_ms: 100, // Start at 100ms between steps
             beam_step_last: Instant::now(),
+            last_click_time: None,
+            last_click_pos: None,
+            click_count: 0,
         }
     }
 
@@ -411,6 +419,79 @@ impl App {
                 tracing::info!("Copied {} chars to clipboard", trimmed.len());
             }
         }
+    }
+
+    /// Find word boundaries around the given position.
+    /// Returns (start, end) positions that encompass the word.
+    fn find_word_boundaries(&self, pos: CellPos) -> Option<(CellPos, CellPos)> {
+        let focused = self.layout.focused_pane();
+        let terminal = self.terminals.get(&focused)?;
+
+        terminal.with_grid(|grid| {
+            use alacritty_terminal::grid::Dimensions;
+            use alacritty_terminal::index::{Column, Line};
+            let cols = grid.columns();
+            let line = Line(pos.row);
+
+            // Check if the clicked position has a non-whitespace character
+            let clicked_char = grid[line][Column(pos.col)].c;
+            if clicked_char.is_whitespace() || clicked_char == '\0' {
+                return None;
+            }
+
+            // Scan left to find word start
+            let mut start_col = pos.col;
+            while start_col > 0 {
+                let c = grid[line][Column(start_col - 1)].c;
+                if c.is_whitespace() || c == '\0' {
+                    break;
+                }
+                start_col -= 1;
+            }
+
+            // Scan right to find word end
+            let mut end_col = pos.col;
+            while end_col < cols - 1 {
+                let c = grid[line][Column(end_col + 1)].c;
+                if c.is_whitespace() || c == '\0' {
+                    break;
+                }
+                end_col += 1;
+            }
+
+            Some((
+                CellPos { col: start_col, row: pos.row },
+                CellPos { col: end_col, row: pos.row },
+            ))
+        })
+    }
+
+    /// Find line boundaries for the given position.
+    /// Returns (start, end) positions that encompass the line content (excluding trailing whitespace).
+    fn find_line_boundaries(&self, pos: CellPos) -> Option<(CellPos, CellPos)> {
+        let focused = self.layout.focused_pane();
+        let terminal = self.terminals.get(&focused)?;
+
+        terminal.with_grid(|grid| {
+            use alacritty_terminal::grid::Dimensions;
+            use alacritty_terminal::index::{Column, Line};
+            let cols = grid.columns();
+            let line = Line(pos.row);
+
+            // Find the last non-whitespace column
+            let mut end_col = 0;
+            for col in 0..cols {
+                let c = grid[line][Column(col)].c;
+                if !c.is_whitespace() && c != '\0' {
+                    end_col = col;
+                }
+            }
+
+            Some((
+                CellPos { col: 0, row: pos.row },
+                CellPos { col: end_col, row: pos.row },
+            ))
+        })
     }
 
     fn create_terminal_for_pane(&mut self, pane_id: PaneId) {
@@ -1229,12 +1310,52 @@ impl ApplicationHandler for App {
                             }
 
                             // Only start selection if pointing at valid content (not the void)
-                            if let Some(pos) =
-                                self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1)
-                            {
-                                self.selection.start = pos;
-                                self.selection.end = pos;
-                                self.selection.active = true;
+                            if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                                let now = Instant::now();
+
+                                // Check if this is a consecutive click (same position, within threshold)
+                                let is_consecutive = self.last_click_time
+                                    .map(|t| now.duration_since(t) < DOUBLE_CLICK_THRESHOLD)
+                                    .unwrap_or(false)
+                                    && self.last_click_pos
+                                        .map(|p| p.col == pos.col && p.row == pos.row)
+                                        .unwrap_or(false);
+
+                                if is_consecutive {
+                                    self.click_count += 1;
+                                } else {
+                                    self.click_count = 1;
+                                }
+
+                                match self.click_count {
+                                    2 => {
+                                        // Double-click: select word
+                                        if let Some((start, end)) = self.find_word_boundaries(pos) {
+                                            self.selection.start = start;
+                                            self.selection.end = end;
+                                            self.selection.active = false;
+                                        }
+                                    }
+                                    3 => {
+                                        // Triple-click: select line
+                                        if let Some((start, end)) = self.find_line_boundaries(pos) {
+                                            self.selection.start = start;
+                                            self.selection.end = end;
+                                            self.selection.active = false;
+                                        }
+                                        // Reset after triple-click
+                                        self.click_count = 0;
+                                    }
+                                    _ => {
+                                        // Single click: start normal selection
+                                        self.selection.start = pos;
+                                        self.selection.end = pos;
+                                        self.selection.active = true;
+                                    }
+                                }
+
+                                self.last_click_time = Some(now);
+                                self.last_click_pos = Some(pos);
                             }
                         }
                         ElementState::Released => {
