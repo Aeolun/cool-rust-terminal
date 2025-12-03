@@ -11,7 +11,34 @@ env:
   APP_NAME: cool-rust-term
 
 jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Get version from Cargo.toml
+        id: cargo
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Check version match
+        run: |
+          if [ "${{ steps.tag.outputs.VERSION }}" != "${{ steps.cargo.outputs.VERSION }}" ]; then
+            echo "::error::Version mismatch! Tag version is ${{ steps.tag.outputs.VERSION }} but Cargo.toml version is ${{ steps.cargo.outputs.VERSION }}"
+            echo "Please update the version in Cargo.toml to match the release tag."
+            exit 1
+          fi
+          echo "Version check passed: ${{ steps.tag.outputs.VERSION }}"
+
   build-linux:
+    needs: validate-version
+    if: always() && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +95,8 @@ jobs:
             cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
 
   build-macos:
+    needs: validate-version
+    if: always() && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
     runs-on: macos-latest
     strategy:
       matrix:
@@ -154,6 +183,8 @@ jobs:
           path: "*.dmg"
 
   build-windows:
+    needs: validate-version
+    if: always() && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

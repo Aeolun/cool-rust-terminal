@@ -377,6 +377,7 @@ impl App {
         let text = terminal.with_grid(|grid| {
             use alacritty_terminal::grid::Dimensions;
             use alacritty_terminal::index::{Column, Line};
+            use alacritty_terminal::term::cell::Flags;
             let cols = grid.columns();
             let mut text = String::new();
 
@@ -398,8 +399,12 @@ impl App {
                         text.push(' ');
                     }
                 }
+                // Only add newline if this row wasn't soft-wrapped
                 if row != end.row {
-                    text.push('\n');
+                    let last_cell = &grid[line][Column(cols - 1)];
+                    if !last_cell.flags.contains(Flags::WRAPLINE) {
+                        text.push('\n');
+                    }
                 }
             }
             text
@@ -460,8 +465,14 @@ impl App {
             }
 
             Some((
-                CellPos { col: start_col, row: pos.row },
-                CellPos { col: end_col, row: pos.row },
+                CellPos {
+                    col: start_col,
+                    row: pos.row,
+                },
+                CellPos {
+                    col: end_col,
+                    row: pos.row,
+                },
             ))
         })
     }
@@ -488,8 +499,14 @@ impl App {
             }
 
             Some((
-                CellPos { col: 0, row: pos.row },
-                CellPos { col: end_col, row: pos.row },
+                CellPos {
+                    col: 0,
+                    row: pos.row,
+                },
+                CellPos {
+                    col: end_col,
+                    row: pos.row,
+                },
             ))
         })
     }
@@ -837,15 +854,16 @@ impl App {
                 if let Some(rect) = rects.get(&focused_pane) {
                     let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
                     let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
-                    // Show two hint lines
+                    // Show version and hint lines
                     size_indicators.push((
                         center_x,
-                        center_y - cell_h * 0.75,
-                        "Ctrl+, for settings".to_string(),
+                        center_y - cell_h * 2.0,
+                        format!("Cool Rust Term v{}", env!("CARGO_PKG_VERSION")),
                     ));
+                    size_indicators.push((center_x, center_y, "Ctrl+, for settings".to_string()));
                     size_indicators.push((
                         center_x,
-                        center_y + cell_h * 0.75,
+                        center_y + cell_h * 1.5,
                         "Ctrl+Shift+Enter for new pane".to_string(),
                     ));
                 }
@@ -1310,14 +1328,18 @@ impl ApplicationHandler for App {
                             }
 
                             // Only start selection if pointing at valid content (not the void)
-                            if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                            if let Some(pos) =
+                                self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1)
+                            {
                                 let now = Instant::now();
 
                                 // Check if this is a consecutive click (same position, within threshold)
-                                let is_consecutive = self.last_click_time
+                                let is_consecutive = self
+                                    .last_click_time
                                     .map(|t| now.duration_since(t) < DOUBLE_CLICK_THRESHOLD)
                                     .unwrap_or(false)
-                                    && self.last_click_pos
+                                    && self
+                                        .last_click_pos
                                         .map(|p| p.col == pos.col && p.row == pos.row)
                                         .unwrap_or(false);
 

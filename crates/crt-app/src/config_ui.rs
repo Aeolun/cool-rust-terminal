@@ -699,7 +699,7 @@ impl ConfigUI {
             } else if col == width - 1 {
                 return ('┐', border, bg);
             } else {
-                let title = " Settings ";
+                let title = format!(" Settings v{} ", env!("CARGO_PKG_VERSION"));
                 let title_start = (width - title.len()) / 2;
                 if col >= title_start && col < title_start + title.len() {
                     let c = title.chars().nth(col - title_start).unwrap_or('─');
