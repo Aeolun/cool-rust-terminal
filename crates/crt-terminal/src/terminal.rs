@@ -121,6 +121,7 @@ impl Terminal {
         let term_size = TermSize::new(columns as usize, rows as usize);
         let term_config = alacritty_terminal::term::Config {
             scrolling_history: SCROLLBACK_LINES,
+            kitty_keyboard: true,
             ..Default::default()
         };
         let term = Term::new(term_config, &term_size, event_proxy.clone());
@@ -251,5 +252,18 @@ impl Terminal {
     pub fn history_size(&self) -> usize {
         let term = self.term.lock();
         term.grid().history_size()
+    }
+
+    /// Check if Kitty keyboard protocol is enabled
+    pub fn kitty_keyboard_enabled(&self) -> bool {
+        use alacritty_terminal::term::TermMode;
+        let term = self.term.lock();
+        term.mode().contains(TermMode::DISAMBIGUATE_ESC_CODES)
+    }
+
+    /// Get the full terminal mode flags for keyboard handling
+    pub fn term_mode(&self) -> alacritty_terminal::term::TermMode {
+        let term = self.term.lock();
+        *term.mode()
     }
 }

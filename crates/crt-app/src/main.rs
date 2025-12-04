@@ -21,7 +21,7 @@ use config_ui::{ConfigAction, ConfigUI};
 use crt_core::{ColorScheme, Config, ScanlineMode};
 use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
-use crt_terminal::Terminal;
+use crt_terminal::{TermMode, Terminal};
 
 /// Convert an ANSI color from alacritty_terminal to our [f32; 4] format
 fn ansi_color_to_rgba(color: AnsiColor, scheme: &ColorScheme, is_dim: bool) -> [f32; 4] {
@@ -79,6 +79,119 @@ fn ansi_color_to_rgba(color: AnsiColor, scheme: &ColorScheme, is_dim: bool) -> [
 /// Apply dim effect to a color (60% brightness)
 fn dim_color(color: [f32; 4]) -> [f32; 4] {
     [color[0] * 0.6, color[1] * 0.6, color[2] * 0.6, color[3]]
+}
+
+/// Kitty keyboard protocol encoder
+mod kitty_keyboard {
+    use winit::keyboard::{Key, ModifiersState, NamedKey};
+
+    /// Encode a key event in Kitty keyboard protocol format.
+    /// Returns None if the key shouldn't be sent (e.g., modifier-only keys).
+    pub fn encode(key: &Key, modifiers: ModifiersState, mode: crate::TermMode) -> Option<Vec<u8>> {
+        // Calculate modifier parameter: (flags + 1) where flags = shift*1 + alt*2 + ctrl*4 + super*8
+        let mod_flags = modifier_flags(modifiers);
+        let report_all = mode.contains(crate::TermMode::REPORT_ALL_KEYS_AS_ESC);
+
+        match key {
+            Key::Character(s) => {
+                if let Some(c) = s.chars().next() {
+                    // For single characters, use CSI codepoint ; modifiers u
+                    let codepoint = c as u32;
+
+                    if mod_flags > 0 || report_all {
+                        // With modifiers: CSI codepoint ; modifiers u
+                        Some(format!("\x1b[{};{}u", codepoint, mod_flags + 1).into_bytes())
+                    } else {
+                        // No modifiers and not reporting all: just send the character
+                        Some(s.as_bytes().to_vec())
+                    }
+                } else {
+                    None
+                }
+            }
+            Key::Named(named) => encode_named_key(named, mod_flags, report_all),
+            _ => None,
+        }
+    }
+
+    fn modifier_flags(modifiers: ModifiersState) -> u8 {
+        let mut flags = 0u8;
+        if modifiers.shift_key() {
+            flags |= 1;
+        }
+        if modifiers.alt_key() {
+            flags |= 2;
+        }
+        if modifiers.control_key() {
+            flags |= 4;
+        }
+        if modifiers.super_key() {
+            flags |= 8;
+        }
+        flags
+    }
+
+    fn encode_named_key(named: &NamedKey, mod_flags: u8, report_all: bool) -> Option<Vec<u8>> {
+        // Kitty protocol functional key codepoints
+        let (codepoint, legacy_suffix): (Option<u32>, Option<&[u8]>) = match named {
+            NamedKey::Enter => (Some(13), None),
+            NamedKey::Tab => (Some(9), None),
+            NamedKey::Backspace => (Some(127), None),
+            NamedKey::Escape => (Some(27), None),
+            NamedKey::Space => (Some(32), None),
+            NamedKey::Delete => (Some(57423), Some(b"3~")),
+            NamedKey::Insert => (Some(57425), Some(b"2~")),
+            NamedKey::Home => (Some(57419), Some(b"H")),
+            NamedKey::End => (Some(57420), Some(b"F")),
+            NamedKey::PageUp => (Some(57421), Some(b"5~")),
+            NamedKey::PageDown => (Some(57422), Some(b"6~")),
+            NamedKey::ArrowUp => (Some(57352), Some(b"A")),
+            NamedKey::ArrowDown => (Some(57353), Some(b"B")),
+            NamedKey::ArrowRight => (Some(57354), Some(b"C")),
+            NamedKey::ArrowLeft => (Some(57351), Some(b"D")),
+            NamedKey::F1 => (Some(57364), Some(b"P")),
+            NamedKey::F2 => (Some(57365), Some(b"Q")),
+            NamedKey::F3 => (Some(57366), Some(b"R")),
+            NamedKey::F4 => (Some(57367), Some(b"S")),
+            NamedKey::F5 => (Some(57368), Some(b"15~")),
+            NamedKey::F6 => (Some(57369), Some(b"17~")),
+            NamedKey::F7 => (Some(57370), Some(b"18~")),
+            NamedKey::F8 => (Some(57371), Some(b"19~")),
+            NamedKey::F9 => (Some(57372), Some(b"20~")),
+            NamedKey::F10 => (Some(57373), Some(b"21~")),
+            NamedKey::F11 => (Some(57374), Some(b"23~")),
+            NamedKey::F12 => (Some(57375), Some(b"24~")),
+            _ => (None, None),
+        };
+
+        if let Some(cp) = codepoint {
+            if mod_flags > 0 || report_all {
+                // Use Kitty format: CSI codepoint ; modifiers u
+                Some(format!("\x1b[{};{}u", cp, mod_flags + 1).into_bytes())
+            } else {
+                // No modifiers: use legacy format for compatibility
+                match named {
+                    NamedKey::Enter => Some(vec![b'\r']),
+                    NamedKey::Tab => Some(vec![b'\t']),
+                    NamedKey::Backspace => Some(vec![0x7f]),
+                    NamedKey::Escape => Some(vec![0x1b]),
+                    NamedKey::Space => Some(vec![b' ']),
+                    _ => {
+                        // Use legacy escape sequence
+                        if let Some(suffix) = legacy_suffix {
+                            let mut seq = vec![0x1b, b'['];
+                            seq.extend_from_slice(suffix);
+                            Some(seq)
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+        } else {
+            None
+        }
+    }
 }
 
 const PANE_PADDING: f32 = 8.0; // Pixels of padding around each pane's content
@@ -181,6 +294,10 @@ struct App {
     last_click_time: Option<Instant>,
     last_click_pos: Option<CellPos>,
     click_count: u8,
+    /// Track Kitty keyboard protocol state per pane for change detection
+    kitty_mode_state: HashMap<PaneId, bool>,
+    /// When to show the Kitty protocol message (pane_id, start_time, enabled)
+    kitty_mode_message: Option<(PaneId, Instant, bool)>,
 }
 
 impl App {
@@ -214,6 +331,8 @@ impl App {
             beam_step_last: Instant::now(),
             last_click_time: None,
             last_click_pos: None,
+            kitty_mode_state: HashMap::new(),
+            kitty_mode_message: None,
             click_count: 0,
         }
     }
@@ -599,6 +718,24 @@ impl App {
                 continue;
             };
 
+            // Check for Kitty keyboard protocol state changes
+            let kitty_enabled = terminal
+                .term_mode()
+                .contains(TermMode::DISAMBIGUATE_ESC_CODES);
+            let prev_state = self.kitty_mode_state.get(pane_id).copied();
+            if prev_state != Some(kitty_enabled) {
+                self.kitty_mode_state.insert(*pane_id, kitty_enabled);
+                // Only show message if this isn't the initial state detection
+                if prev_state.is_some() {
+                    self.kitty_mode_message = Some((*pane_id, Instant::now(), kitty_enabled));
+                    tracing::info!(
+                        "Kitty keyboard protocol {} for pane {:?}",
+                        if kitty_enabled { "enabled" } else { "disabled" },
+                        pane_id
+                    );
+                }
+            }
+
             // Add padding offset, rounded to integer pixels for crisp bitmap font rendering
             let x_offset = (rect.x * win_width as f32 + PANE_PADDING).floor();
             let y_offset = (rect.y * win_height as f32 + PANE_PADDING).floor();
@@ -867,6 +1004,27 @@ impl App {
                         "Ctrl+Shift+Enter for new pane".to_string(),
                     ));
                 }
+            }
+        }
+
+        // Show Kitty keyboard protocol status message
+        const KITTY_MSG_DURATION: f32 = 1.5;
+        if let Some((pane_id, start_time, enabled)) = self.kitty_mode_message {
+            let elapsed = start_time.elapsed().as_secs_f32();
+            if elapsed < KITTY_MSG_DURATION {
+                if let Some(rect) = rects.get(&pane_id) {
+                    let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
+                    let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
+                    let msg = if enabled {
+                        "Kitty keyboard protocol enabled"
+                    } else {
+                        "Kitty keyboard protocol disabled"
+                    };
+                    size_indicators.push((center_x, center_y, msg.to_string()));
+                }
+            } else {
+                // Message expired, clear it
+                self.kitty_mode_message = None;
             }
         }
 
@@ -1648,66 +1806,74 @@ impl ApplicationHandler for App {
                     // Send input to focused terminal
                     let focused = self.layout.focused_pane();
                     if let Some(terminal) = self.terminals.get(&focused) {
-                        let alt = self.modifiers.alt_key();
+                        let mode = terminal.term_mode();
+                        let use_kitty = mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
 
                         // Convert key to bytes and send to terminal
-                        let bytes: Option<Vec<u8>> = match &event.logical_key {
-                            Key::Character(s) => {
-                                if ctrl && s.len() == 1 {
-                                    // Ctrl+letter sends control code
-                                    let c = s.chars().next().unwrap();
-                                    if c.is_ascii_lowercase() {
-                                        Some(vec![c as u8 - b'a' + 1])
-                                    } else if c.is_ascii_uppercase() {
-                                        Some(vec![c as u8 - b'A' + 1])
+                        let bytes: Option<Vec<u8>> = if use_kitty {
+                            // Use Kitty keyboard protocol
+                            kitty_keyboard::encode(&event.logical_key, self.modifiers, mode)
+                        } else {
+                            // Legacy escape sequence encoding
+                            let alt = self.modifiers.alt_key();
+                            match &event.logical_key {
+                                Key::Character(s) => {
+                                    if ctrl && s.len() == 1 {
+                                        // Ctrl+letter sends control code
+                                        let c = s.chars().next().unwrap();
+                                        if c.is_ascii_lowercase() {
+                                            Some(vec![c as u8 - b'a' + 1])
+                                        } else if c.is_ascii_uppercase() {
+                                            Some(vec![c as u8 - b'A' + 1])
+                                        } else {
+                                            Some(s.as_bytes().to_vec())
+                                        }
+                                    } else if alt && s.len() == 1 {
+                                        // Alt+key sends ESC + key
+                                        let mut bytes = vec![0x1b];
+                                        bytes.extend(s.as_bytes());
+                                        Some(bytes)
                                     } else {
                                         Some(s.as_bytes().to_vec())
                                     }
-                                } else if alt && s.len() == 1 {
-                                    // Alt+key sends ESC + key
-                                    let mut bytes = vec![0x1b];
-                                    bytes.extend(s.as_bytes());
-                                    Some(bytes)
-                                } else {
-                                    Some(s.as_bytes().to_vec())
                                 }
-                            }
-                            Key::Named(named) => match named {
-                                NamedKey::Enter => {
-                                    if alt {
-                                        Some(vec![0x1b, b'\r'])
-                                    } else {
-                                        Some(vec![b'\r'])
+                                Key::Named(named) => match named {
+                                    NamedKey::Enter => {
+                                        if alt {
+                                            Some(vec![0x1b, b'\r'])
+                                        } else {
+                                            Some(vec![b'\r'])
+                                        }
                                     }
-                                }
-                                NamedKey::Backspace => Some(vec![0x7f]),
-                                NamedKey::Tab => Some(vec![b'\t']),
-                                NamedKey::Escape => Some(vec![0x1b]),
-                                NamedKey::ArrowUp => Some(b"\x1b[A".to_vec()),
-                                NamedKey::ArrowDown => Some(b"\x1b[B".to_vec()),
-                                NamedKey::ArrowRight => Some(b"\x1b[C".to_vec()),
-                                NamedKey::ArrowLeft => Some(b"\x1b[D".to_vec()),
-                                NamedKey::Home => Some(b"\x1b[H".to_vec()),
-                                NamedKey::End => Some(b"\x1b[F".to_vec()),
-                                NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
-                                NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
-                                NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
-                                NamedKey::Space => {
-                                    if alt {
-                                        Some(vec![0x1b, b' '])
-                                    } else {
-                                        Some(vec![b' '])
+                                    NamedKey::Backspace => Some(vec![0x7f]),
+                                    NamedKey::Tab => Some(vec![b'\t']),
+                                    NamedKey::Escape => Some(vec![0x1b]),
+                                    NamedKey::ArrowUp => Some(b"\x1b[A".to_vec()),
+                                    NamedKey::ArrowDown => Some(b"\x1b[B".to_vec()),
+                                    NamedKey::ArrowRight => Some(b"\x1b[C".to_vec()),
+                                    NamedKey::ArrowLeft => Some(b"\x1b[D".to_vec()),
+                                    NamedKey::Home => Some(b"\x1b[H".to_vec()),
+                                    NamedKey::End => Some(b"\x1b[F".to_vec()),
+                                    NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
+                                    NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
+                                    NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
+                                    NamedKey::Space => {
+                                        if alt {
+                                            Some(vec![0x1b, b' '])
+                                        } else {
+                                            Some(vec![b' '])
+                                        }
                                     }
-                                }
+                                    _ => None,
+                                },
                                 _ => None,
-                            },
-                            _ => None,
+                            }
                         };
 
-                        if let Some(bytes) = bytes {
+                        if let Some(ref bytes) = bytes {
                             // Auto-scroll to bottom when typing
                             terminal.scroll_to_bottom();
-                            terminal.input(&bytes);
+                            terminal.input(bytes);
                         }
                     }
                 } else if event.state == ElementState::Released {

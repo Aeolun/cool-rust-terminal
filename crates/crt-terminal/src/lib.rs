@@ -3,4 +3,5 @@
 
 pub mod terminal;
 
+pub use alacritty_terminal::term::TermMode;
 pub use terminal::Terminal;
