@@ -91,6 +91,7 @@ mod kitty_keyboard {
         // Calculate modifier parameter: (flags + 1) where flags = shift*1 + alt*2 + ctrl*4 + super*8
         let mod_flags = modifier_flags(modifiers);
         let report_all = mode.contains(crate::TermMode::REPORT_ALL_KEYS_AS_ESC);
+        let app_cursor = mode.contains(crate::TermMode::APP_CURSOR);
 
         match key {
             Key::Character(s) => {
@@ -109,7 +110,7 @@ mod kitty_keyboard {
                     None
                 }
             }
-            Key::Named(named) => encode_named_key(named, mod_flags, report_all),
+            Key::Named(named) => encode_named_key(named, mod_flags, report_all, app_cursor, mode),
             _ => None,
         }
     }
@@ -131,43 +132,83 @@ mod kitty_keyboard {
         flags
     }
 
-    fn encode_named_key(named: &NamedKey, mod_flags: u8, report_all: bool) -> Option<Vec<u8>> {
-        // Kitty protocol functional key codepoints
-        let (codepoint, legacy_suffix): (Option<u32>, Option<&[u8]>) = match named {
-            NamedKey::Enter => (Some(13), None),
-            NamedKey::Tab => (Some(9), None),
-            NamedKey::Backspace => (Some(127), None),
-            NamedKey::Escape => (Some(27), None),
-            NamedKey::Space => (Some(32), None),
-            NamedKey::Delete => (Some(57423), Some(b"3~")),
-            NamedKey::Insert => (Some(57425), Some(b"2~")),
-            NamedKey::Home => (Some(57419), Some(b"H")),
-            NamedKey::End => (Some(57420), Some(b"F")),
-            NamedKey::PageUp => (Some(57421), Some(b"5~")),
-            NamedKey::PageDown => (Some(57422), Some(b"6~")),
-            NamedKey::ArrowUp => (Some(57352), Some(b"A")),
-            NamedKey::ArrowDown => (Some(57353), Some(b"B")),
-            NamedKey::ArrowRight => (Some(57354), Some(b"C")),
-            NamedKey::ArrowLeft => (Some(57351), Some(b"D")),
-            NamedKey::F1 => (Some(57364), Some(b"P")),
-            NamedKey::F2 => (Some(57365), Some(b"Q")),
-            NamedKey::F3 => (Some(57366), Some(b"R")),
-            NamedKey::F4 => (Some(57367), Some(b"S")),
-            NamedKey::F5 => (Some(57368), Some(b"15~")),
-            NamedKey::F6 => (Some(57369), Some(b"17~")),
-            NamedKey::F7 => (Some(57370), Some(b"18~")),
-            NamedKey::F8 => (Some(57371), Some(b"19~")),
-            NamedKey::F9 => (Some(57372), Some(b"20~")),
-            NamedKey::F10 => (Some(57373), Some(b"21~")),
-            NamedKey::F11 => (Some(57374), Some(b"23~")),
-            NamedKey::F12 => (Some(57375), Some(b"24~")),
-            _ => (None, None),
-        };
+    fn encode_named_key(
+        named: &NamedKey,
+        mod_flags: u8,
+        report_all: bool,
+        app_cursor: bool,
+        mode: crate::TermMode,
+    ) -> Option<Vec<u8>> {
+        // Kitty protocol functional key codepoints and legacy suffixes
+        // For cursor keys: suffix is the letter (A/B/C/D), ss3_key indicates if it can use SS3 format
+        let (codepoint, legacy_suffix, is_cursor_key): (Option<u32>, Option<&[u8]>, bool) =
+            match named {
+                NamedKey::Enter => (Some(13), None, false),
+                NamedKey::Tab => (Some(9), None, false),
+                NamedKey::Backspace => (Some(127), None, false),
+                NamedKey::Escape => (Some(27), None, false),
+                NamedKey::Space => (Some(32), None, false),
+                NamedKey::Delete => (Some(57423), Some(b"3~"), false),
+                NamedKey::Insert => (Some(57425), Some(b"2~"), false),
+                NamedKey::Home => (Some(57419), Some(b"H"), true),
+                NamedKey::End => (Some(57420), Some(b"F"), true),
+                NamedKey::PageUp => (Some(57421), Some(b"5~"), false),
+                NamedKey::PageDown => (Some(57422), Some(b"6~"), false),
+                NamedKey::ArrowUp => (Some(57352), Some(b"A"), true),
+                NamedKey::ArrowDown => (Some(57353), Some(b"B"), true),
+                NamedKey::ArrowRight => (Some(57354), Some(b"C"), true),
+                NamedKey::ArrowLeft => (Some(57351), Some(b"D"), true),
+                NamedKey::F1 => (Some(57364), Some(b"P"), true),
+                NamedKey::F2 => (Some(57365), Some(b"Q"), true),
+                NamedKey::F3 => (Some(57366), Some(b"R"), true),
+                NamedKey::F4 => (Some(57367), Some(b"S"), true),
+                NamedKey::F5 => (Some(57368), Some(b"15~"), false),
+                NamedKey::F6 => (Some(57369), Some(b"17~"), false),
+                NamedKey::F7 => (Some(57370), Some(b"18~"), false),
+                NamedKey::F8 => (Some(57371), Some(b"19~"), false),
+                NamedKey::F9 => (Some(57372), Some(b"20~"), false),
+                NamedKey::F10 => (Some(57373), Some(b"21~"), false),
+                NamedKey::F11 => (Some(57374), Some(b"23~"), false),
+                NamedKey::F12 => (Some(57375), Some(b"24~"), false),
+                _ => (None, None, false),
+            };
 
         if let Some(cp) = codepoint {
-            if mod_flags > 0 || report_all {
-                // Use Kitty format: CSI codepoint ; modifiers u
+            // Detect if the app is likely a proper Kitty protocol implementation or crossterm.
+            // Crossterm doesn't support REPORT_ASSOCIATED_TEXT, so if it's requested,
+            // the app is probably spec-compliant and expects proper CSI u codepoints.
+            // Otherwise, use legacy format for functional keys since crossterm doesn't
+            // correctly parse Kitty's functional key codepoints (57351-57354 for arrows).
+            let report_associated_text = mode.contains(crate::TermMode::REPORT_ASSOCIATED_TEXT);
+            let is_functional_key = legacy_suffix.is_some();
+            let use_legacy_for_functional = is_functional_key && !report_associated_text;
+
+            if report_all && !use_legacy_for_functional {
+                // Full Kitty mode with spec-compliant app: use CSI u format
                 Some(format!("\x1b[{};{}u", cp, mod_flags + 1).into_bytes())
+            } else if mod_flags > 0 {
+                // Disambiguate mode with modifiers: use legacy format with modifiers
+                if let Some(suffix) = legacy_suffix {
+                    if suffix.ends_with(b"~") {
+                        // For keys with ~ suffix: CSI number ; modifiers ~
+                        let suffix_str = String::from_utf8_lossy(suffix);
+                        let number = suffix_str.trim_end_matches('~');
+                        Some(format!("\x1b[{};{}~", number, mod_flags + 1).into_bytes())
+                    } else {
+                        // For single-letter suffix: CSI 1 ; modifiers letter
+                        Some(
+                            format!(
+                                "\x1b[1;{}{}",
+                                mod_flags + 1,
+                                String::from_utf8_lossy(suffix)
+                            )
+                            .into_bytes(),
+                        )
+                    }
+                } else {
+                    // No legacy suffix (Enter, Tab, etc. with modifiers), use CSI u
+                    Some(format!("\x1b[{};{}u", cp, mod_flags + 1).into_bytes())
+                }
             } else {
                 // No modifiers: use legacy format for compatibility
                 match named {
@@ -179,9 +220,16 @@ mod kitty_keyboard {
                     _ => {
                         // Use legacy escape sequence
                         if let Some(suffix) = legacy_suffix {
-                            let mut seq = vec![0x1b, b'['];
-                            seq.extend_from_slice(suffix);
-                            Some(seq)
+                            // When APP_CURSOR (DECCKM) is set, cursor keys use SS3 format
+                            if app_cursor && is_cursor_key && suffix.len() == 1 {
+                                let mut seq = vec![0x1b, b'O'];
+                                seq.extend_from_slice(suffix);
+                                Some(seq)
+                            } else {
+                                let mut seq = vec![0x1b, b'['];
+                                seq.extend_from_slice(suffix);
+                                Some(seq)
+                            }
                         } else {
                             None
                         }
@@ -296,8 +344,8 @@ struct App {
     click_count: u8,
     /// Track Kitty keyboard protocol state per pane for change detection
     kitty_mode_state: HashMap<PaneId, bool>,
-    /// When to show the Kitty protocol message (pane_id, start_time, enabled)
-    kitty_mode_message: Option<(PaneId, Instant, bool)>,
+    /// When to show the Kitty protocol message (pane_id, start_time, enabled, crossterm_compat)
+    kitty_mode_message: Option<(PaneId, Instant, bool, bool)>,
 }
 
 impl App {
@@ -719,19 +767,27 @@ impl App {
             };
 
             // Check for Kitty keyboard protocol state changes
-            let kitty_enabled = terminal
-                .term_mode()
-                .contains(TermMode::DISAMBIGUATE_ESC_CODES);
+            let term_mode = terminal.term_mode();
+            let kitty_enabled = term_mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
             let prev_state = self.kitty_mode_state.get(pane_id).copied();
             if prev_state != Some(kitty_enabled) {
                 self.kitty_mode_state.insert(*pane_id, kitty_enabled);
                 // Only show message if this isn't the initial state detection
                 if prev_state.is_some() {
-                    self.kitty_mode_message = Some((*pane_id, Instant::now(), kitty_enabled));
+                    // Crossterm compat mode: REPORT_ASSOCIATED_TEXT not requested
+                    let crossterm_compat =
+                        kitty_enabled && !term_mode.contains(TermMode::REPORT_ASSOCIATED_TEXT);
+                    self.kitty_mode_message =
+                        Some((*pane_id, Instant::now(), kitty_enabled, crossterm_compat));
                     tracing::info!(
-                        "Kitty keyboard protocol {} for pane {:?}",
+                        "Kitty keyboard protocol {} for pane {:?}{}",
                         if kitty_enabled { "enabled" } else { "disabled" },
-                        pane_id
+                        pane_id,
+                        if crossterm_compat {
+                            " (crossterm compat)"
+                        } else {
+                            ""
+                        }
                     );
                 }
             }
@@ -1007,24 +1063,42 @@ impl App {
             }
         }
 
-        // Show Kitty keyboard protocol status message
+        // Show Kitty keyboard protocol status message (top right of pane)
         const KITTY_MSG_DURATION: f32 = 1.5;
-        if let Some((pane_id, start_time, enabled)) = self.kitty_mode_message {
-            let elapsed = start_time.elapsed().as_secs_f32();
-            if elapsed < KITTY_MSG_DURATION {
-                if let Some(rect) = rects.get(&pane_id) {
-                    let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
-                    let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
-                    let msg = if enabled {
-                        "Kitty keyboard protocol enabled"
-                    } else {
-                        "Kitty keyboard protocol disabled"
-                    };
-                    size_indicators.push((center_x, center_y, msg.to_string()));
+        if self.config.behavior.show_kitty_message {
+            if let Some((pane_id, start_time, enabled, crossterm_compat)) = self.kitty_mode_message
+            {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                if elapsed < KITTY_MSG_DURATION {
+                    if let Some(rect) = rects.get(&pane_id) {
+                        let msg = if enabled {
+                            "Kitty keyboard protocol enabled"
+                        } else {
+                            "Kitty keyboard protocol disabled"
+                        };
+                        // Position at top right, accounting for message width
+                        let msg_width = msg.len() as f32 * cell_w;
+                        let x = (rect.x + rect.width) * win_width as f32
+                            - msg_width / 2.0
+                            - PANE_PADDING;
+                        let y = rect.y * win_height as f32 + cell_h + PANE_PADDING;
+                        size_indicators.push((x, y, msg.to_string()));
+
+                        // Show crossterm compat indicator on second line
+                        if crossterm_compat {
+                            let compat_msg = "(crossterm compat)";
+                            let compat_width = compat_msg.len() as f32 * cell_w;
+                            let compat_x = (rect.x + rect.width) * win_width as f32
+                                - compat_width / 2.0
+                                - PANE_PADDING;
+                            let compat_y = y + cell_h * 1.2;
+                            size_indicators.push((compat_x, compat_y, compat_msg.to_string()));
+                        }
+                    }
+                } else {
+                    // Message expired, clear it
+                    self.kitty_mode_message = None;
                 }
-            } else {
-                // Message expired, clear it
-                self.kitty_mode_message = None;
             }
         }
 
@@ -1816,6 +1890,7 @@ impl ApplicationHandler for App {
                         } else {
                             // Legacy escape sequence encoding
                             let alt = self.modifiers.alt_key();
+                            let app_cursor = mode.contains(TermMode::APP_CURSOR);
                             match &event.logical_key {
                                 Key::Character(s) => {
                                     if ctrl && s.len() == 1 {
@@ -1848,12 +1923,49 @@ impl ApplicationHandler for App {
                                     NamedKey::Backspace => Some(vec![0x7f]),
                                     NamedKey::Tab => Some(vec![b'\t']),
                                     NamedKey::Escape => Some(vec![0x1b]),
-                                    NamedKey::ArrowUp => Some(b"\x1b[A".to_vec()),
-                                    NamedKey::ArrowDown => Some(b"\x1b[B".to_vec()),
-                                    NamedKey::ArrowRight => Some(b"\x1b[C".to_vec()),
-                                    NamedKey::ArrowLeft => Some(b"\x1b[D".to_vec()),
-                                    NamedKey::Home => Some(b"\x1b[H".to_vec()),
-                                    NamedKey::End => Some(b"\x1b[F".to_vec()),
+                                    // Cursor keys: use SS3 format when APP_CURSOR (DECCKM) is set
+                                    NamedKey::ArrowUp => {
+                                        if app_cursor {
+                                            Some(b"\x1bOA".to_vec())
+                                        } else {
+                                            Some(b"\x1b[A".to_vec())
+                                        }
+                                    }
+                                    NamedKey::ArrowDown => {
+                                        if app_cursor {
+                                            Some(b"\x1bOB".to_vec())
+                                        } else {
+                                            Some(b"\x1b[B".to_vec())
+                                        }
+                                    }
+                                    NamedKey::ArrowRight => {
+                                        if app_cursor {
+                                            Some(b"\x1bOC".to_vec())
+                                        } else {
+                                            Some(b"\x1b[C".to_vec())
+                                        }
+                                    }
+                                    NamedKey::ArrowLeft => {
+                                        if app_cursor {
+                                            Some(b"\x1bOD".to_vec())
+                                        } else {
+                                            Some(b"\x1b[D".to_vec())
+                                        }
+                                    }
+                                    NamedKey::Home => {
+                                        if app_cursor {
+                                            Some(b"\x1bOH".to_vec())
+                                        } else {
+                                            Some(b"\x1b[H".to_vec())
+                                        }
+                                    }
+                                    NamedKey::End => {
+                                        if app_cursor {
+                                            Some(b"\x1bOF".to_vec())
+                                        } else {
+                                            Some(b"\x1b[F".to_vec())
+                                        }
+                                    }
                                     NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
                                     NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
                                     NamedKey::Delete => Some(b"\x1b[3~".to_vec()),

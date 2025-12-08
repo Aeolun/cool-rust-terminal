@@ -395,6 +395,8 @@ pub struct BehaviorSettings {
     pub auto_copy_selection: bool,
     /// Show keyboard shortcut hints on startup
     pub show_startup_hint: bool,
+    /// Show Kitty keyboard protocol status messages
+    pub show_kitty_message: bool,
 }
 
 impl Default for BehaviorSettings {
@@ -402,6 +404,7 @@ impl Default for BehaviorSettings {
         Self {
             auto_copy_selection: false,
             show_startup_hint: true,
+            show_kitty_message: true,
         }
     }
 }
