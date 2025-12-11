@@ -38,6 +38,7 @@ tokio = { version = "1", features = ["full"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 
 # Logging
@@ -56,3 +57,7 @@ bytemuck = { version = "1", features = ["derive"] }
 
 # Platform utilities
 dirs = "5"
+libc = "0.2"
+
+# Compression
+zstd = "0.13"

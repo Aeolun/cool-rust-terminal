@@ -4,7 +4,9 @@
 pub mod color;
 pub mod config;
 pub mod effects;
+pub mod session;
 
 pub use color::Color;
 pub use config::{BdfFont, BehaviorSettings, ColorScheme, Config, Font};
 pub use effects::{EffectSettings, ScanlineMode};
+pub use session::{PaneSession, SessionData, SessionError};

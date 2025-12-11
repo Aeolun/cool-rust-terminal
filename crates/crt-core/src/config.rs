@@ -397,6 +397,8 @@ pub struct BehaviorSettings {
     pub show_startup_hint: bool,
     /// Show Kitty keyboard protocol status messages
     pub show_kitty_message: bool,
+    /// Restore terminal session (scrollback + working directory) on startup
+    pub restore_session: bool,
 }
 
 impl Default for BehaviorSettings {
@@ -405,6 +407,7 @@ impl Default for BehaviorSettings {
             auto_copy_selection: false,
             show_startup_hint: true,
             show_kitty_message: true,
+            restore_session: true,
         }
     }
 }

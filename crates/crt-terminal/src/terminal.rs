@@ -8,6 +8,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::tty;
 use alacritty_terminal::Grid;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub struct Terminal {
     term: Arc<FairMutex<Term<EventProxy>>>,
     sender: EventLoopSender,
     exited: Arc<AtomicBool>,
+    /// PID of the shell process (Unix only, 0 on Windows)
+    child_pid: u32,
 }
 
 /// Proxy for terminal events
@@ -78,14 +81,25 @@ pub enum TerminalError {
 impl Terminal {
     /// Create a new terminal with the given dimensions
     pub fn new(columns: u16, rows: u16) -> Result<Self, TerminalError> {
+        Self::with_working_directory(columns, rows, None)
+    }
+
+    /// Create a new terminal with the given dimensions and working directory
+    pub fn with_working_directory(
+        columns: u16,
+        rows: u16,
+        working_directory: Option<PathBuf>,
+    ) -> Result<Self, TerminalError> {
         // Set TERM and COLORTERM in the process environment before spawning the shell.
         // This is required for GUI apps launched from Finder which have no parent terminal.
         tty::setup_env();
 
+        let cwd = working_directory.or_else(dirs::home_dir);
+
         #[cfg(not(windows))]
         let pty_config = tty::Options {
             shell: None,
-            working_directory: dirs::home_dir(),
+            working_directory: cwd,
             drain_on_exit: true,
             env: std::collections::HashMap::new(),
         };
@@ -93,7 +107,7 @@ impl Terminal {
         #[cfg(windows)]
         let pty_config = tty::Options {
             shell: None,
-            working_directory: dirs::home_dir(),
+            working_directory: cwd,
             drain_on_exit: true,
             env: std::collections::HashMap::new(),
             escape_args: true,
@@ -107,6 +121,12 @@ impl Terminal {
         };
 
         let pty = tty::new(&pty_config, window_size, 0)?;
+
+        // Capture PID before pty is moved into EventLoop
+        #[cfg(not(windows))]
+        let child_pid = pty.child().id();
+        #[cfg(windows)]
+        let child_pid = 0;
 
         let exited = Arc::new(AtomicBool::new(false));
 
@@ -148,12 +168,29 @@ impl Terminal {
             term,
             sender,
             exited,
+            child_pid,
         })
     }
 
     /// Check if the shell has exited
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    /// Get the PID of the shell process (Unix only, returns 0 on Windows)
+    pub fn child_pid(&self) -> u32 {
+        self.child_pid
+    }
+
+    /// Get the current working directory of the shell process
+    pub fn working_directory(&self) -> Option<std::path::PathBuf> {
+        crate::process_info::get_process_cwd(self.child_pid)
+    }
+
+    /// Capture scrollback data for session restoration
+    pub fn capture_scrollback(&self) -> crate::scrollback::ScrollbackData {
+        let term = self.term.lock();
+        crate::scrollback::ScrollbackData::from_grid(term.grid())
     }
 
     /// Send input bytes to the terminal

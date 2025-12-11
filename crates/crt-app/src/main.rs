@@ -18,7 +18,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
-use crt_core::{ColorScheme, Config, ScanlineMode};
+use crt_core::{ColorScheme, Config, ScanlineMode, SessionData};
 use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::{TermMode, Terminal};
@@ -682,6 +682,15 @@ impl App {
     }
 
     fn create_terminal_for_pane(&mut self, pane_id: PaneId) {
+        self.create_terminal_for_pane_with_session(pane_id, None, None);
+    }
+
+    fn create_terminal_for_pane_with_session(
+        &mut self,
+        pane_id: PaneId,
+        working_directory: Option<std::path::PathBuf>,
+        scrollback: Option<&[u8]>,
+    ) {
         let Some(renderer) = &self.renderer else {
             return;
         };
@@ -696,8 +705,25 @@ impl App {
                 ((rect.height * win_height as f32) - PANE_PADDING * 2.0).max(1.0) as u32;
             let (cols, rows) = renderer.grid_size_for_region(pane_width, pane_height);
 
-            match Terminal::new(cols, rows) {
+            let result = if working_directory.is_some() {
+                Terminal::with_working_directory(cols, rows, working_directory)
+            } else {
+                Terminal::new(cols, rows)
+            };
+
+            match result {
                 Ok(terminal) => {
+                    // Note: Scrollback data is captured but not restored to display.
+                    // Proper scrollback restore would require direct grid manipulation,
+                    // which alacritty_terminal doesn't easily expose. For now we just
+                    // restore the working directory.
+                    if scrollback.is_some() {
+                        tracing::debug!(
+                            "Scrollback data available for pane {:?} but display restore not implemented",
+                            pane_id
+                        );
+                    }
+
                     self.terminals.insert(pane_id, terminal);
                     tracing::info!(
                         "Created terminal for pane {:?} ({}x{} cells)",
@@ -1481,17 +1507,59 @@ impl ApplicationHandler for App {
         self.window = Some(window);
         self.renderer = Some(renderer);
 
+        // Try to load session data for restoration (Unix only, if enabled)
+        #[cfg(not(windows))]
+        let session = if self.config.behavior.restore_session {
+            SessionData::load_from_default()
+        } else {
+            None
+        };
+        #[cfg(windows)]
+        let session: Option<SessionData> = None;
+
         // Create terminal for the initial pane
         let initial_pane = self.layout.focused_pane();
-        self.create_terminal_for_pane(initial_pane);
+        if let Some(ref sess) = session {
+            if let Some(pane_session) = sess.panes.first() {
+                self.create_terminal_for_pane_with_session(
+                    initial_pane,
+                    pane_session.cwd.clone(),
+                    Some(&pane_session.scrollback),
+                );
+            } else {
+                self.create_terminal_for_pane(initial_pane);
+            }
+        } else {
+            self.create_terminal_for_pane(initial_pane);
+        }
 
-        // Restore additional panes from saved config
+        // Restore additional panes from saved config (use session data if available)
         let panes_to_restore = self.config.pane_count.saturating_sub(1);
-        for _ in 0..panes_to_restore {
-            self.add_pane();
+        for i in 0..panes_to_restore {
+            let new_pane_id = self.layout.add_pane();
+            self.resize_terminals();
+
+            // Get session data for this pane index (i+1 because first pane is index 0)
+            let pane_idx = (i + 1) as usize;
+            if let Some(ref sess) = session {
+                if let Some(pane_session) = sess.panes.get(pane_idx) {
+                    self.create_terminal_for_pane_with_session(
+                        new_pane_id,
+                        pane_session.cwd.clone(),
+                        Some(&pane_session.scrollback),
+                    );
+                } else {
+                    self.create_terminal_for_pane(new_pane_id);
+                }
+            } else {
+                self.create_terminal_for_pane(new_pane_id);
+            }
         }
         if panes_to_restore > 0 {
             tracing::info!("Restored {} additional panes from config", panes_to_restore);
+        }
+        if session.is_some() {
+            tracing::info!("Session data restored");
         }
 
         let (cols, rows) = self.renderer.as_ref().unwrap().grid_size();
@@ -1506,6 +1574,25 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => {
+                // Save session data (scrollback + cwd for each pane) if enabled
+                #[cfg(not(windows))]
+                if self.config.behavior.restore_session {
+                    let mut session = SessionData::new();
+                    for (idx, pane_id) in self.layout.panes().iter().enumerate() {
+                        if let Some(terminal) = self.terminals.get(pane_id) {
+                            let scrollback = terminal.capture_scrollback();
+                            let compressed = scrollback.compress().unwrap_or_default();
+                            let cwd = terminal.working_directory();
+                            session.add_pane(compressed, cwd, idx);
+                        }
+                    }
+                    if let Err(e) = session.save_to_default() {
+                        tracing::error!("Failed to save session: {}", e);
+                    } else {
+                        tracing::info!("Session saved ({} panes)", session.panes.len());
+                    }
+                }
+
                 // Save window state before exiting
                 self.config.pane_count = self.layout.panes().len() as u32;
                 if let Err(e) = self.config.save_to_default() {

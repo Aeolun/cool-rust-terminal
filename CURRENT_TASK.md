@@ -75,12 +75,20 @@ struct PaneSession {
 - Consider: command to manually save/clear session
 
 ## Implementation Order
-1. Add PID tracking to Terminal
-2. Implement cwd query (Linux: `/proc/{pid}/cwd`, macOS: libproc)
-3. Implement scrollback serialization/compression (zstd)
-4. Session file format and save on close
-5. Session restore on startup (skip entirely on Windows)
-6. Config option `behavior.restore_session` and polish
+1. ✅ Add PID tracking to Terminal (`crt-terminal/src/terminal.rs`)
+2. ✅ Implement cwd query (`crt-terminal/src/process_info.rs`)
+   - Linux: `/proc/{pid}/cwd` symlink
+   - macOS: `proc_pidinfo` with `PROC_PIDVNODEPATHINFO`
+3. ✅ Implement scrollback serialization/compression (`crt-terminal/src/scrollback.rs`)
+   - Uses zstd compression
+   - Serializes cell data (char, colors, flags)
+4. ✅ Session file format and save on close (`crt-core/src/session.rs`)
+   - Saved to `~/.local/state/cool-rust-term/session.bin`
+5. ✅ Session restore on startup (skip entirely on Windows)
+   - Working directory: ✅ Fully working
+   - Scrollback display: ⚠️ Data captured but not restored to display
+     (requires direct grid manipulation not exposed by alacritty_terminal)
+6. ✅ Config option `behavior.restore_session` (default: true)
 
 ## Decisions Made
 - **Pane layout**: Pane count determines layout (no manual splitting), so just restore count
