@@ -1413,10 +1413,18 @@ impl ApplicationHandler for App {
         // Load application icon
         let icon = load_icon();
 
-        let window_attrs = WindowAttributes::default()
+        let mut window_attrs = WindowAttributes::default()
             .with_title("cool-rust-term")
-            .with_inner_size(LogicalSize::new(1200, 800))
+            .with_inner_size(LogicalSize::new(
+                self.config.window_width,
+                self.config.window_height,
+            ))
             .with_window_icon(icon);
+
+        // Restore window position if saved
+        if let (Some(x), Some(y)) = (self.config.window_x, self.config.window_y) {
+            window_attrs = window_attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
 
         let window = Arc::new(
             event_loop
@@ -1472,6 +1480,15 @@ impl ApplicationHandler for App {
         let initial_pane = self.layout.focused_pane();
         self.create_terminal_for_pane(initial_pane);
 
+        // Restore additional panes from saved config
+        let panes_to_restore = self.config.pane_count.saturating_sub(1);
+        for _ in 0..panes_to_restore {
+            self.add_pane();
+        }
+        if panes_to_restore > 0 {
+            tracing::info!("Restored {} additional panes from config", panes_to_restore);
+        }
+
         let (cols, rows) = self.renderer.as_ref().unwrap().grid_size();
         tracing::info!("Window and renderer initialized ({}x{} cells)", cols, rows);
     }
@@ -1484,8 +1501,20 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => {
+                // Save window state before exiting
+                self.config.pane_count = self.layout.panes().len() as u32;
+                if let Err(e) = self.config.save_to_default() {
+                    tracing::error!("Failed to save window state: {}", e);
+                } else {
+                    tracing::info!("Window state saved");
+                }
                 tracing::info!("Close requested, exiting");
                 event_loop.exit();
+            }
+            WindowEvent::Moved(position) => {
+                // Save window position
+                self.config.window_x = Some(position.x);
+                self.config.window_y = Some(position.y);
             }
             WindowEvent::Resized(new_size) => {
                 if let Some(renderer) = &mut self.renderer {
@@ -1493,6 +1522,9 @@ impl ApplicationHandler for App {
                     self.resize_terminals();
                     self.last_resize = Some(Instant::now());
                 }
+                // Save window size
+                self.config.window_width = new_size.width;
+                self.config.window_height = new_size.height;
             }
             WindowEvent::RedrawRequested => {
                 // Check for exited terminals and close their panes

@@ -434,6 +434,13 @@ pub struct Config {
     pub window_width: u32,
     pub window_height: u32,
 
+    /// Window position (None = let the OS decide)
+    pub window_x: Option<i32>,
+    pub window_y: Option<i32>,
+
+    /// Number of panes to restore on startup
+    pub pane_count: u32,
+
     /// Per-pane CRT effects (each pane is its own "monitor")
     pub per_pane_crt: bool,
 }
@@ -449,6 +456,9 @@ impl Default for Config {
             color_scheme: ColorScheme::default(),
             window_width: 1200,
             window_height: 800,
+            window_x: None,
+            window_y: None,
+            pane_count: 1,
             per_pane_crt: false,
         }
     }
