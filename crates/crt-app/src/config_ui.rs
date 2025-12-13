@@ -65,6 +65,7 @@ pub enum ConfigField {
     FontType,      // Toggle between TTF and BDF
     FontFamily,    // TTF font selector (hidden when BDF selected)
     FontSize,      // TTF font size (hidden when BDF selected)
+    UiScale,       // UI scaling for TTF fonts (hidden when BDF selected)
     BdfFontFamily, // BDF font selector (hidden when TTF selected)
     ColorSchemeField,
     // Behavior tab
@@ -102,6 +103,7 @@ impl ConfigField {
             ConfigField::FontType,
             ConfigField::FontFamily,
             ConfigField::FontSize,
+            ConfigField::UiScale,
             ConfigField::BdfFontFamily,
             ConfigField::ColorSchemeField,
             // Behavior tab
@@ -145,6 +147,7 @@ impl ConfigField {
             ConfigField::FontType => "Font Type",
             ConfigField::FontFamily => "TTF Font",
             ConfigField::FontSize => "Font Size",
+            ConfigField::UiScale => "UI Scale",
             ConfigField::BdfFontFamily => "BDF Font",
             ConfigField::ColorSchemeField => "Colors",
             ConfigField::AutoCopySelection => "Auto-copy",
@@ -172,6 +175,7 @@ impl ConfigField {
                 | ConfigField::ContentScaleX
                 | ConfigField::ContentScaleY
                 | ConfigField::FontSize
+                | ConfigField::UiScale
         )
     }
 
@@ -226,6 +230,7 @@ impl ConfigField {
             ConfigField::FontType
             | ConfigField::FontFamily
             | ConfigField::FontSize
+            | ConfigField::UiScale
             | ConfigField::BdfFontFamily
             | ConfigField::ColorSchemeField => Some(ConfigTab::Appearance),
             // Behavior tab
@@ -253,7 +258,9 @@ impl ConfigField {
     fn should_show(&self, config: &Config) -> bool {
         match self {
             // TTF-specific fields: only show when BDF is not selected
-            ConfigField::FontFamily | ConfigField::FontSize => config.bdf_font.is_none(),
+            ConfigField::FontFamily | ConfigField::FontSize | ConfigField::UiScale => {
+                config.bdf_font.is_none()
+            }
             // BDF-specific fields: only show when BDF is selected
             ConfigField::BdfFontFamily => config.bdf_font.is_some(),
             // Interlace only shows when beam simulation is enabled
@@ -541,6 +548,10 @@ impl ConfigUI {
                 let change = if delta > 0.0 { 1.0 } else { -1.0 };
                 self.config.font_size = (self.config.font_size + change).clamp(8.0, 32.0);
             }
+            ConfigField::UiScale => {
+                let change = if delta > 0.0 { 0.25 } else { -0.25 };
+                self.config.ui_scale = (self.config.ui_scale + change).clamp(1.0, 3.0);
+            }
             ConfigField::BdfFontFamily => {
                 if let Some(ref mut bdf) = self.config.bdf_font {
                     if delta > 0.0 {
@@ -612,6 +623,7 @@ impl ConfigUI {
             ConfigField::ContentScaleX => (self.config.effects.content_scale_x - 0.8) / 0.4, // 0.8 to 1.2 range
             ConfigField::ContentScaleY => (self.config.effects.content_scale_y - 0.8) / 0.4, // 0.8 to 1.2 range
             ConfigField::FontSize => (self.config.font_size - 8.0) / 24.0, // 8-32 range
+            ConfigField::UiScale => (self.config.ui_scale - 1.0) / 2.0, // 1.0-3.0 range
             _ => 0.0,
         }
     }
@@ -872,6 +884,7 @@ impl ConfigUI {
                     format!("{:.2}", self.config.effects.focus_glow_intensity)
                 }
                 ConfigField::FontSize => format!("{:.0}px", self.config.font_size),
+                ConfigField::UiScale => format!("{:.2}x", self.config.ui_scale),
                 _ => String::new(),
             };
 

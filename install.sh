@@ -75,13 +75,14 @@ choose_linux_variant() {
         return
     fi
 
-    # Parse version (e.g., "2.31" -> 231)
+    # Parse version (e.g., "2.39" -> 239)
     local version_num
     version_num=$(echo "$glibc_version" | tr -d '.')
 
-    # Use glibc if version >= 2.31 (Ubuntu 20.04 / Debian 11)
+    # Use glibc if version >= 2.39 (Ubuntu 24.04+)
+    # This matches what the glibc binary was built against on GitHub Actions
     # Otherwise use musl for compatibility
-    if [[ $version_num -ge 231 ]]; then
+    if [[ $version_num -ge 239 ]]; then
         echo "glibc"
     else
         echo "musl"

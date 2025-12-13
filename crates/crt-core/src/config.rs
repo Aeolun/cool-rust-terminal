@@ -424,6 +424,9 @@ pub struct Config {
     /// Font size in pixels (used for TTF fonts; BDF fonts use their native size)
     pub font_size: f32,
 
+    /// UI scaling factor (1.0-3.0), only applied to TTF fonts for high-DPI displays
+    pub ui_scale: f32,
+
     /// Optional BDF bitmap font (overrides TTF `font` if set)
     pub bdf_font: Option<BdfFont>,
 
@@ -452,6 +455,7 @@ impl Default for Config {
             behavior: BehaviorSettings::default(),
             font: Font::default(),
             font_size: 18.0,
+            ui_scale: 1.0,
             bdf_font: None,
             color_scheme: ColorScheme::default(),
             window_width: 1200,

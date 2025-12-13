@@ -1202,7 +1202,7 @@ impl App {
                 }
             } else {
                 let preview_font = self.config_ui.config.font;
-                let preview_font_size = self.config_ui.config.font_size;
+                let preview_font_size = self.config_ui.config.font_size * self.config_ui.config.ui_scale;
                 if let Err(e) = renderer.set_font(preview_font, preview_font_size) {
                     tracing::error!("Failed to preview font: {}", e);
                 }
@@ -1433,10 +1433,11 @@ impl ApplicationHandler for App {
         );
 
         // Initialize renderer with font from config
+        // Apply ui_scale to font_size for TTF fonts (BDF fonts ignore scaling)
         let mut renderer = pollster::block_on(Renderer::new(
             Arc::clone(&window),
             self.config.font,
-            self.config.font_size,
+            self.config.font_size * self.config.ui_scale,
         ))
         .expect("Failed to create renderer");
 
@@ -1874,7 +1875,7 @@ impl ApplicationHandler for App {
                                                         }
                                                     } else if let Err(e) = renderer.set_font(
                                                         new_config.font,
-                                                        new_config.font_size,
+                                                        new_config.font_size * new_config.ui_scale,
                                                     ) {
                                                         tracing::error!(
                                                             "Failed to change font: {}",
