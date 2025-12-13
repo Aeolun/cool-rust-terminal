@@ -1,0 +1,10 @@
+# Cargo configuration for static compilation with musl
+# This avoids glibc version issues by statically linking with musl libc
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-gnu-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[build]
+# Uncomment to use musl by default for all Linux builds
+# target = "x86_64-unknown-linux-musl"

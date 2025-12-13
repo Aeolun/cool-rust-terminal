@@ -40,6 +40,15 @@ jobs:
     needs: validate-version
     if: always() && (needs.validate-version.result == 'success' || needs.validate-version.result == 'skipped')
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - name: glibc
+            triple: x86_64-unknown-linux-gnu
+            suffix: ""
+          - name: musl
+            triple: x86_64-unknown-linux-musl
+            suffix: "-musl"
     steps:
       - uses: actions/checkout@v4
 
@@ -66,33 +75,39 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.triple }}
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target.name }}
 
       - name: Install cargo-deb
+        if: matrix.target.name == 'glibc'
         run: cargo install cargo-deb
 
-      - name: Build release binary
-        run: cargo build --release --package crt-app
+      - name: Build release binary (${{ matrix.target.name }})
+        run: cargo build --release --package crt-app --target ${{ matrix.target.triple }}
 
       - name: Create .deb package
-        run: cargo deb --package crt-app --no-build
+        if: matrix.target.name == 'glibc'
+        run: cargo deb --package crt-app --target ${{ matrix.target.triple }} --no-build
 
       - name: Create tarball
         run: |
           mkdir -p dist
-          cp target/release/${{ env.APP_NAME }} dist/
+          cp target/${{ matrix.target.triple }}/release/${{ env.APP_NAME }} dist/
           cp README.md LICENSE dist/
-          cd dist && tar -czvf ../cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz *
+          cd dist && tar -czvf ../cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64${{ matrix.target.suffix }}.tar.gz *
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-artifacts
+          name: linux-${{ matrix.target.name }}
           path: |
             target/debian/*.deb
-            cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
+            cool-rust-term-${{ steps.version.outputs.VERSION }}-linux-x86_64${{ matrix.target.suffix }}.tar.gz
 
   build-macos:
     needs: validate-version
@@ -241,8 +256,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/linux-artifacts/*.deb
-            artifacts/linux-artifacts/*.tar.gz
+            artifacts/linux-glibc/*.deb
+            artifacts/linux-glibc/*.tar.gz
+            artifacts/linux-musl/*.tar.gz
             artifacts/macos-x86_64-apple-darwin/*.dmg
             artifacts/macos-aarch64-apple-darwin/*.dmg
             artifacts/windows-artifacts/*.zip

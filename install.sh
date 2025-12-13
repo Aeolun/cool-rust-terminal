@@ -57,11 +57,54 @@ get_latest_version() {
     echo "$version"
 }
 
+# Detect glibc version and choose appropriate binary
+choose_linux_variant() {
+    # Check if ldd is available (indicates glibc system)
+    if ! command -v ldd &> /dev/null; then
+        echo "musl"
+        return
+    fi
+
+    # Get glibc version
+    local glibc_version
+    glibc_version=$(ldd --version 2>&1 | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1)
+
+    if [[ -z "$glibc_version" ]]; then
+        # Couldn't detect glibc, use musl for safety
+        echo "musl"
+        return
+    fi
+
+    # Parse version (e.g., "2.31" -> 231)
+    local version_num
+    version_num=$(echo "$glibc_version" | tr -d '.')
+
+    # Use glibc if version >= 2.31 (Ubuntu 20.04 / Debian 11)
+    # Otherwise use musl for compatibility
+    if [[ $version_num -ge 231 ]]; then
+        echo "glibc"
+    else
+        echo "musl"
+    fi
+}
+
 # Install on Linux
 install_linux() {
     local version="$1"
     local version_num="${version#v}"  # Remove 'v' prefix
-    local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version_num}-linux-x86_64.tar.gz"
+
+    # Detect which variant to use
+    local variant
+    variant=$(choose_linux_variant)
+
+    local suffix=""
+    if [[ "$variant" == "musl" ]]; then
+        suffix="-musl"
+    fi
+
+    info "Using ${variant} variant for maximum compatibility"
+
+    local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version_num}-linux-x86_64${suffix}.tar.gz"
     local tmp_dir
     tmp_dir=$(mktemp -d)
 

@@ -30,7 +30,7 @@ section = "x11"
 priority = "optional"
 depends = "$auto"
 assets = [
-    ["../../target/release/cool-rust-term", "usr/bin/", "755"],
+    ["../../target/x86_64-unknown-linux-gnu/release/cool-rust-term", "usr/bin/", "755"],
     ["../../assets/icon.png", "usr/share/icons/hicolor/256x256/apps/cool-rust-term.png", "644"],
     ["../../assets/cool-rust-term.desktop", "usr/share/applications/cool-rust-term.desktop", "644"],
     ["../../README.md", "usr/share/doc/cool-rust-term/README.md", "644"],
