@@ -46,7 +46,7 @@ jobs:
             runner: ubuntu-24.04
             suffix: ""
           - name: compat
-            runner: ubuntu-20.04
+            runner: ubuntu-22.04
             suffix: "-compat"
     runs-on: ${{ matrix.runner }}
     steps:
