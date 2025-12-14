@@ -623,7 +623,7 @@ impl ConfigUI {
             ConfigField::ContentScaleX => (self.config.effects.content_scale_x - 0.8) / 0.4, // 0.8 to 1.2 range
             ConfigField::ContentScaleY => (self.config.effects.content_scale_y - 0.8) / 0.4, // 0.8 to 1.2 range
             ConfigField::FontSize => (self.config.font_size - 8.0) / 24.0, // 8-32 range
-            ConfigField::UiScale => (self.config.ui_scale - 1.0) / 2.0, // 1.0-3.0 range
+            ConfigField::UiScale => (self.config.ui_scale - 1.0) / 2.0,    // 1.0-3.0 range
             _ => 0.0,
         }
     }

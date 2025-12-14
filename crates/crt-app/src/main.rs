@@ -1202,7 +1202,8 @@ impl App {
                 }
             } else {
                 let preview_font = self.config_ui.config.font;
-                let preview_font_size = self.config_ui.config.font_size * self.config_ui.config.ui_scale;
+                let preview_font_size =
+                    self.config_ui.config.font_size * self.config_ui.config.ui_scale;
                 if let Err(e) = renderer.set_font(preview_font, preview_font_size) {
                     tracing::error!("Failed to preview font: {}", e);
                 }
