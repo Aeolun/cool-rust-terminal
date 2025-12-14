@@ -346,6 +346,8 @@ struct App {
     kitty_mode_state: HashMap<PaneId, bool>,
     /// When to show the Kitty protocol message (pane_id, start_time, enabled, crossterm_compat)
     kitty_mode_message: Option<(PaneId, Instant, bool, bool)>,
+    /// Accumulator for pixel-based scroll deltas (touchpad)
+    scroll_accumulator: f64,
 }
 
 impl App {
@@ -382,6 +384,7 @@ impl App {
             kitty_mode_state: HashMap::new(),
             kitty_mode_message: None,
             click_count: 0,
+            scroll_accumulator: 0.0,
         }
     }
 
@@ -1660,8 +1663,20 @@ impl ApplicationHandler for App {
                 let focused = self.layout.focused_pane();
                 if let Some(terminal) = self.terminals.get(&focused) {
                     let lines = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y as i32 * 3,
-                        MouseScrollDelta::PixelDelta(pos) => (pos.y / 20.0) as i32,
+                        MouseScrollDelta::LineDelta(_, y) => {
+                            // Accumulate fractional line deltas (touchpads often send these)
+                            self.scroll_accumulator += y as f64 * 3.0;
+                            let lines = self.scroll_accumulator as i32;
+                            self.scroll_accumulator -= lines as f64;
+                            lines
+                        }
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            // Touchpad pixel mode: accumulate and convert
+                            self.scroll_accumulator += pos.y / 20.0;
+                            let lines = self.scroll_accumulator as i32;
+                            self.scroll_accumulator -= lines as f64;
+                            lines
+                        }
                     };
                     if lines != 0 {
                         terminal.scroll(lines);
