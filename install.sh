@@ -61,8 +61,7 @@ get_latest_version() {
 choose_linux_variant() {
     # Check if ldd is available (indicates glibc system)
     if ! command -v ldd &> /dev/null; then
-        echo "musl"
-        return
+        error "Could not detect glibc. This application requires glibc 2.35 or newer."
     fi
 
     # Get glibc version
@@ -70,22 +69,21 @@ choose_linux_variant() {
     glibc_version=$(ldd --version 2>&1 | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1)
 
     if [[ -z "$glibc_version" ]]; then
-        # Couldn't detect glibc, use musl for safety
-        echo "musl"
-        return
+        error "Could not detect glibc version. This application requires glibc 2.35 or newer."
     fi
 
     # Parse version (e.g., "2.39" -> 239)
     local version_num
     version_num=$(echo "$glibc_version" | tr -d '.')
 
-    # Use glibc if version >= 2.39 (Ubuntu 24.04+)
-    # This matches what the glibc binary was built against on GitHub Actions
-    # Otherwise use musl for compatibility
+    # Use modern build if glibc >= 2.39 (Ubuntu 24.04+)
+    # Use compat build if glibc >= 2.35 (Ubuntu 22.04+)
     if [[ $version_num -ge 239 ]]; then
-        echo "glibc"
+        echo "modern"
+    elif [[ $version_num -ge 235 ]]; then
+        echo "compat"
     else
-        echo "musl"
+        error "glibc ${glibc_version} is too old. This application requires glibc 2.35 or newer (Ubuntu 22.04+)."
     fi
 }
 
@@ -99,11 +97,11 @@ install_linux() {
     variant=$(choose_linux_variant)
 
     local suffix=""
-    if [[ "$variant" == "musl" ]]; then
-        suffix="-musl"
+    if [[ "$variant" == "compat" ]]; then
+        suffix="-compat"
     fi
 
-    info "Using ${variant} variant for maximum compatibility"
+    info "Using ${variant} build (glibc)"
 
     local url="https://github.com/${REPO}/releases/download/${version}/${APP_NAME}-${version_num}-linux-x86_64${suffix}.tar.gz"
     local tmp_dir
