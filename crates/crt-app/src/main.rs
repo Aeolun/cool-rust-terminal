@@ -1296,7 +1296,10 @@ impl App {
             // Ensure we're using the saved config's font (in case preview changed it)
             // BDF fonts take priority over TTF fonts
             if self.config.bdf_font.is_none() {
-                if let Err(e) = renderer.set_font(self.config.font, self.config.font_size) {
+                if let Err(e) = renderer.set_font(
+                    self.config.font,
+                    self.config.font_size * self.config.ui_scale,
+                ) {
                     tracing::error!("Failed to restore font: {}", e);
                 }
             }
@@ -1956,7 +1959,10 @@ impl ApplicationHandler for App {
                                                     || (new_config.font_size
                                                         - self.config.font_size)
                                                         .abs()
-                                                        > 0.1;
+                                                        > 0.1
+                                                    || (new_config.ui_scale - self.config.ui_scale)
+                                                        .abs()
+                                                        > 0.01;
 
                                                 if font_changed {
                                                     // Apply the appropriate font type
