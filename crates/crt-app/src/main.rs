@@ -4,6 +4,7 @@
 mod config_ui;
 
 use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,7 +19,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
-use crt_core::{ColorScheme, Config, ScanlineMode, SessionData};
+use crt_core::{ColorScheme, Config, ScanlineMode, SessionData, UpdateInfo};
 use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::{TermMode, Terminal};
@@ -182,6 +183,12 @@ mod kitty_keyboard {
             let report_associated_text = mode.contains(crate::TermMode::REPORT_ASSOCIATED_TEXT);
             let is_functional_key = legacy_suffix.is_some();
             let use_legacy_for_functional = is_functional_key && !report_associated_text;
+
+            // Special case: Shift+Tab sends \x1b[Z (backtab) in legacy/crossterm-compat mode
+            // This is the standard xterm sequence that most applications expect
+            if *named == NamedKey::Tab && mod_flags == 1 && !report_associated_text {
+                return Some(b"\x1b[Z".to_vec());
+            }
 
             if report_all && !use_legacy_for_functional {
                 // Full Kitty mode with spec-compliant app: use CSI u format
@@ -348,6 +355,10 @@ struct App {
     kitty_mode_message: Option<(PaneId, Instant, bool, bool)>,
     /// Accumulator for pixel-based scroll deltas (touchpad)
     scroll_accumulator: f64,
+    /// Receiver for update check results from background thread
+    update_receiver: Option<Receiver<UpdateInfo>>,
+    /// Cached update info after check completes
+    update_info: Option<UpdateInfo>,
 }
 
 impl App {
@@ -385,6 +396,8 @@ impl App {
             kitty_mode_message: None,
             click_count: 0,
             scroll_accumulator: 0.0,
+            update_receiver: None,
+            update_info: None,
         }
     }
 
@@ -1076,16 +1089,41 @@ impl App {
                 if let Some(rect) = rects.get(&focused_pane) {
                     let center_x = (rect.x + rect.width / 2.0) * win_width as f32;
                     let center_y = (rect.y + rect.height / 2.0) * win_height as f32;
+
+                    // Check if update is available
+                    let has_update = self
+                        .update_info
+                        .as_ref()
+                        .map(|i| i.update_available)
+                        .unwrap_or(false);
+                    let line_offset = if has_update { 0.5 } else { 0.0 };
+
                     // Show version and hint lines
                     size_indicators.push((
                         center_x,
-                        center_y - cell_h * 2.0,
+                        center_y - cell_h * (2.5 + line_offset),
                         format!("Cool Rust Term v{}", env!("CARGO_PKG_VERSION")),
                     ));
-                    size_indicators.push((center_x, center_y, "Ctrl+, for settings".to_string()));
+
+                    // Show update available message if applicable
+                    if let Some(ref info) = self.update_info {
+                        if info.update_available {
+                            size_indicators.push((
+                                center_x,
+                                center_y - cell_h * 1.0,
+                                format!("Update available: v{}", info.latest_version),
+                            ));
+                        }
+                    }
+
                     size_indicators.push((
                         center_x,
-                        center_y + cell_h * 1.5,
+                        center_y + cell_h * line_offset,
+                        "Ctrl+, for settings".to_string(),
+                    ));
+                    size_indicators.push((
+                        center_x,
+                        center_y + cell_h * (1.5 + line_offset),
                         "Ctrl+Shift+Enter for new pane".to_string(),
                     ));
                 }
@@ -1443,6 +1481,17 @@ impl ApplicationHandler for App {
             return;
         }
 
+        // Spawn background update check if enabled
+        if self.config.behavior.check_for_updates && self.update_receiver.is_none() {
+            let (tx, rx) = mpsc::channel();
+            self.update_receiver = Some(rx);
+            std::thread::spawn(move || {
+                if let Some(info) = crt_core::update_check::check_for_updates() {
+                    let _ = tx.send(info);
+                }
+            });
+        }
+
         // Load application icon
         let icon = load_icon();
 
@@ -1622,6 +1671,20 @@ impl ApplicationHandler for App {
                 self.config.window_height = new_size.height;
             }
             WindowEvent::RedrawRequested => {
+                // Check for update check results
+                if let Some(ref rx) = self.update_receiver {
+                    if let Ok(info) = rx.try_recv() {
+                        if info.update_available {
+                            tracing::info!(
+                                "Update available: v{} -> v{}",
+                                info.current_version,
+                                info.latest_version
+                            );
+                        }
+                        self.update_info = Some(info);
+                    }
+                }
+
                 // Check for exited terminals and close their panes
                 let exited = self.check_exited_terminals();
                 for pane_id in exited {
@@ -1792,6 +1855,13 @@ impl ApplicationHandler for App {
                     // Shift+Ctrl+Enter: Add new pane
                     if ctrl && shift && event.logical_key == Key::Named(NamedKey::Enter) {
                         self.add_pane();
+                        return;
+                    }
+
+                    // Ctrl+Shift+W: Close focused pane
+                    if ctrl && shift && event.logical_key == Key::Character("W".into()) {
+                        let focused = self.layout.focused_pane();
+                        self.close_pane(focused);
                         return;
                     }
 
@@ -2054,72 +2124,212 @@ impl ApplicationHandler for App {
                                         Some(s.as_bytes().to_vec())
                                     }
                                 }
-                                Key::Named(named) => match named {
-                                    NamedKey::Enter => {
-                                        if alt {
-                                            Some(vec![0x1b, b'\r'])
-                                        } else {
-                                            Some(vec![b'\r'])
+                                Key::Named(named) => {
+                                    // xterm modifier encoding: shift=1, alt=2, ctrl=4
+                                    // Parameter value = bits + 1
+                                    let xterm_mod = 1
+                                        + if shift { 1 } else { 0 }
+                                        + if alt { 2 } else { 0 }
+                                        + if ctrl { 4 } else { 0 };
+                                    let has_mods = xterm_mod > 1;
+
+                                    match named {
+                                        NamedKey::Enter => {
+                                            if alt {
+                                                Some(vec![0x1b, b'\r'])
+                                            } else {
+                                                Some(vec![b'\r'])
+                                            }
                                         }
-                                    }
-                                    NamedKey::Backspace => Some(vec![0x7f]),
-                                    NamedKey::Tab => Some(vec![b'\t']),
-                                    NamedKey::Escape => Some(vec![0x1b]),
-                                    // Cursor keys: use SS3 format when APP_CURSOR (DECCKM) is set
-                                    NamedKey::ArrowUp => {
-                                        if app_cursor {
-                                            Some(b"\x1bOA".to_vec())
-                                        } else {
-                                            Some(b"\x1b[A".to_vec())
+                                        NamedKey::Backspace => Some(vec![0x7f]),
+                                        NamedKey::Tab => {
+                                            if shift {
+                                                Some(b"\x1b[Z".to_vec()) // Backtab
+                                            } else {
+                                                Some(vec![b'\t'])
+                                            }
                                         }
-                                    }
-                                    NamedKey::ArrowDown => {
-                                        if app_cursor {
-                                            Some(b"\x1bOB".to_vec())
-                                        } else {
-                                            Some(b"\x1b[B".to_vec())
+                                        NamedKey::Escape => Some(vec![0x1b]),
+                                        NamedKey::Space => {
+                                            if alt {
+                                                Some(vec![0x1b, b' '])
+                                            } else {
+                                                Some(vec![b' '])
+                                            }
                                         }
-                                    }
-                                    NamedKey::ArrowRight => {
-                                        if app_cursor {
-                                            Some(b"\x1bOC".to_vec())
-                                        } else {
-                                            Some(b"\x1b[C".to_vec())
+                                        // Cursor keys: SS3 format when APP_CURSOR, CSI with modifiers
+                                        NamedKey::ArrowUp => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}A", xterm_mod).into_bytes())
+                                            } else if app_cursor {
+                                                Some(b"\x1bOA".to_vec())
+                                            } else {
+                                                Some(b"\x1b[A".to_vec())
+                                            }
                                         }
-                                    }
-                                    NamedKey::ArrowLeft => {
-                                        if app_cursor {
-                                            Some(b"\x1bOD".to_vec())
-                                        } else {
-                                            Some(b"\x1b[D".to_vec())
+                                        NamedKey::ArrowDown => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}B", xterm_mod).into_bytes())
+                                            } else if app_cursor {
+                                                Some(b"\x1bOB".to_vec())
+                                            } else {
+                                                Some(b"\x1b[B".to_vec())
+                                            }
                                         }
-                                    }
-                                    NamedKey::Home => {
-                                        if app_cursor {
-                                            Some(b"\x1bOH".to_vec())
-                                        } else {
-                                            Some(b"\x1b[H".to_vec())
+                                        NamedKey::ArrowRight => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}C", xterm_mod).into_bytes())
+                                            } else if app_cursor {
+                                                Some(b"\x1bOC".to_vec())
+                                            } else {
+                                                Some(b"\x1b[C".to_vec())
+                                            }
                                         }
-                                    }
-                                    NamedKey::End => {
-                                        if app_cursor {
-                                            Some(b"\x1bOF".to_vec())
-                                        } else {
-                                            Some(b"\x1b[F".to_vec())
+                                        NamedKey::ArrowLeft => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}D", xterm_mod).into_bytes())
+                                            } else if app_cursor {
+                                                Some(b"\x1bOD".to_vec())
+                                            } else {
+                                                Some(b"\x1b[D".to_vec())
+                                            }
                                         }
-                                    }
-                                    NamedKey::PageUp => Some(b"\x1b[5~".to_vec()),
-                                    NamedKey::PageDown => Some(b"\x1b[6~".to_vec()),
-                                    NamedKey::Delete => Some(b"\x1b[3~".to_vec()),
-                                    NamedKey::Space => {
-                                        if alt {
-                                            Some(vec![0x1b, b' '])
-                                        } else {
-                                            Some(vec![b' '])
+                                        NamedKey::Home => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}H", xterm_mod).into_bytes())
+                                            } else if app_cursor {
+                                                Some(b"\x1bOH".to_vec())
+                                            } else {
+                                                Some(b"\x1b[H".to_vec())
+                                            }
                                         }
+                                        NamedKey::End => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}F", xterm_mod).into_bytes())
+                                            } else if app_cursor {
+                                                Some(b"\x1bOF".to_vec())
+                                            } else {
+                                                Some(b"\x1b[F".to_vec())
+                                            }
+                                        }
+                                        // Tilde-style keys: CSI num ~ or CSI num ; mod ~
+                                        NamedKey::Insert => {
+                                            if has_mods {
+                                                Some(format!("\x1b[2;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[2~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::Delete => {
+                                            if has_mods {
+                                                Some(format!("\x1b[3;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[3~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::PageUp => {
+                                            if has_mods {
+                                                Some(format!("\x1b[5;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[5~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::PageDown => {
+                                            if has_mods {
+                                                Some(format!("\x1b[6;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[6~".to_vec())
+                                            }
+                                        }
+                                        // Function keys F1-F4: SS3 format or CSI 1 ; mod X
+                                        NamedKey::F1 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}P", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1bOP".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F2 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}Q", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1bOQ".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F3 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}R", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1bOR".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F4 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[1;{}S", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1bOS".to_vec())
+                                            }
+                                        }
+                                        // Function keys F5-F12: CSI num ~ format
+                                        NamedKey::F5 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[15;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[15~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F6 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[17;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[17~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F7 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[18;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[18~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F8 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[19;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[19~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F9 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[20;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[20~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F10 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[21;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[21~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F11 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[23;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[23~".to_vec())
+                                            }
+                                        }
+                                        NamedKey::F12 => {
+                                            if has_mods {
+                                                Some(format!("\x1b[24;{}~", xterm_mod).into_bytes())
+                                            } else {
+                                                Some(b"\x1b[24~".to_vec())
+                                            }
+                                        }
+                                        _ => None,
                                     }
-                                    _ => None,
-                                },
+                                }
                                 _ => None,
                             }
                         };

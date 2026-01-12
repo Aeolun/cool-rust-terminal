@@ -12,3 +12,4 @@ toml = { workspace = true }
 thiserror = { workspace = true }
 dirs = { workspace = true }
 zstd = { workspace = true }
+ureq = { workspace = true }

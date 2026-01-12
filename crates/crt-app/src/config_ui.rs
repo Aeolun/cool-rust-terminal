@@ -72,6 +72,7 @@ pub enum ConfigField {
     AutoCopySelection,
     ShowStartupHint,
     ShowKittyMessage,
+    CheckForUpdates,
     // Common
     Save,
     Cancel,
@@ -110,6 +111,7 @@ impl ConfigField {
             ConfigField::AutoCopySelection,
             ConfigField::ShowStartupHint,
             ConfigField::ShowKittyMessage,
+            ConfigField::CheckForUpdates,
             // Common
             ConfigField::Save,
             ConfigField::Cancel,
@@ -153,6 +155,7 @@ impl ConfigField {
             ConfigField::AutoCopySelection => "Auto-copy",
             ConfigField::ShowStartupHint => "Startup hint",
             ConfigField::ShowKittyMessage => "Kitty msg",
+            ConfigField::CheckForUpdates => "Check updates",
             ConfigField::Save => "[ Save ]",
             ConfigField::Cancel => "[ Cancel ]",
         }
@@ -187,6 +190,7 @@ impl ConfigField {
                 | ConfigField::AutoCopySelection
                 | ConfigField::ShowStartupHint
                 | ConfigField::ShowKittyMessage
+                | ConfigField::CheckForUpdates
                 | ConfigField::FontType
                 | ConfigField::ScanlineMode
                 | ConfigField::BeamSimulation
@@ -236,7 +240,8 @@ impl ConfigField {
             // Behavior tab
             ConfigField::AutoCopySelection
             | ConfigField::ShowStartupHint
-            | ConfigField::ShowKittyMessage => Some(ConfigTab::Behavior),
+            | ConfigField::ShowKittyMessage
+            | ConfigField::CheckForUpdates => Some(ConfigTab::Behavior),
             // Save/Cancel are on all tabs
             ConfigField::Save | ConfigField::Cancel => None,
         }
@@ -426,6 +431,10 @@ impl ConfigUI {
                 self.config.behavior.show_kitty_message = !self.config.behavior.show_kitty_message;
                 None
             }
+            ConfigField::CheckForUpdates => {
+                self.config.behavior.check_for_updates = !self.config.behavior.check_for_updates;
+                None
+            }
             ConfigField::FontType => {
                 // Toggle between TTF and BDF
                 if self.config.bdf_font.is_some() {
@@ -588,6 +597,9 @@ impl ConfigUI {
             }
             ConfigField::ShowKittyMessage => {
                 self.config.behavior.show_kitty_message = delta > 0.0;
+            }
+            ConfigField::CheckForUpdates => {
+                self.config.behavior.check_for_updates = delta > 0.0;
             }
             ConfigField::ContentScaleX => {
                 let change = if delta > 0.0 { 0.01 } else { -0.01 };
@@ -939,6 +951,7 @@ impl ConfigUI {
                 ConfigField::AutoCopySelection => self.config.behavior.auto_copy_selection,
                 ConfigField::ShowStartupHint => self.config.behavior.show_startup_hint,
                 ConfigField::ShowKittyMessage => self.config.behavior.show_kitty_message,
+                ConfigField::CheckForUpdates => self.config.behavior.check_for_updates,
                 ConfigField::Interlace => self.config.effects.interlace_enabled,
                 _ => false,
             };
