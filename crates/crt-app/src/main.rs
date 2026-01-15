@@ -322,6 +322,8 @@ const POWERON_DURATION: f32 = 1.05; // Must match shader's POWERON_TOTAL
 const STARTUP_HINT_DELAY: f32 = POWERON_DURATION;
 const STARTUP_HINT_DURATION: f32 = 2.0;
 const STARTUP_HINT_FADE: f32 = 0.5;
+const PASTE_DIALOG_MIN_WIDTH: usize = 28;
+const BRACKETED_MSG_DURATION: f32 = 1.5;
 
 #[derive(Debug, Clone, Copy)]
 struct ActiveFontSettings {
@@ -371,6 +373,12 @@ struct App {
     kitty_mode_state: HashMap<PaneId, bool>,
     /// When to show the Kitty protocol message (pane_id, start_time, enabled, crossterm_compat)
     kitty_mode_message: Option<(PaneId, Instant, bool, bool)>,
+    /// Track bracketed paste mode per pane for change detection
+    bracketed_paste_state: HashMap<PaneId, bool>,
+    /// When to show the bracketed paste message (pane_id, start_time, enabled)
+    bracketed_paste_message: Option<(PaneId, Instant, bool)>,
+    /// Active paste confirmation dialog
+    paste_dialog: Option<PasteDialog>,
     /// Accumulator for pixel-based scroll deltas (touchpad)
     scroll_accumulator: f64,
     /// Receiver for update check results from background thread
@@ -378,6 +386,16 @@ struct App {
     /// Cached update info after check completes
     update_info: Option<UpdateInfo>,
     last_font_settings: Option<ActiveFontSettings>,
+}
+
+struct PasteDialog {
+    pane_id: PaneId,
+    original_text: String,
+    paste_text: String,
+    stripped_text: String,
+    selected: usize,
+    bracketed_paste_enabled: bool,
+    strip_cr_enabled: bool,
 }
 
 impl App {
@@ -413,6 +431,9 @@ impl App {
             last_click_pos: None,
             kitty_mode_state: HashMap::new(),
             kitty_mode_message: None,
+            bracketed_paste_state: HashMap::new(),
+            bracketed_paste_message: None,
+            paste_dialog: None,
             click_count: 0,
             scroll_accumulator: 0.0,
             update_receiver: None,
@@ -432,6 +453,299 @@ impl App {
             1.0 / avg_dt
         } else {
             0.0
+        }
+    }
+
+    fn paste_needs_confirmation(text: &str) -> bool {
+        text.chars()
+            .any(|c| c == '\n' || c == '\r' || c.is_control())
+    }
+
+    fn strip_control_chars(text: &str) -> String {
+        text.chars().filter(|c| !c.is_control()).collect()
+    }
+
+    fn strip_carriage_returns(text: &str) -> String {
+        text.replace('\r', "")
+    }
+
+    fn open_paste_dialog(
+        &mut self,
+        pane_id: PaneId,
+        text: String,
+        bracketed_paste: bool,
+        strip_cr: bool,
+    ) {
+        let paste_text = if strip_cr {
+            Self::strip_carriage_returns(&text)
+        } else {
+            text.clone()
+        };
+        let stripped_text = Self::strip_control_chars(&paste_text);
+        self.paste_dialog = Some(PasteDialog {
+            pane_id,
+            original_text: text,
+            paste_text,
+            stripped_text,
+            selected: 0,
+            bracketed_paste_enabled: bracketed_paste,
+            strip_cr_enabled: strip_cr,
+        });
+    }
+
+    fn handle_paste_dialog_input(&mut self, key: &Key) -> bool {
+        let Some(dialog) = &mut self.paste_dialog else {
+            return false;
+        };
+
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.paste_dialog = None;
+                return true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                if dialog.selected == 0 {
+                    dialog.selected = 2;
+                } else {
+                    dialog.selected -= 1;
+                }
+                return true;
+            }
+            Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Tab) => {
+                dialog.selected = (dialog.selected + 1) % 3;
+                return true;
+            }
+            Key::Character(c) if c == "1" => {
+                dialog.selected = 0;
+                return true;
+            }
+            Key::Character(c) if c == "2" => {
+                dialog.selected = 1;
+                return true;
+            }
+            Key::Character(c) if c == "3" => {
+                dialog.selected = 2;
+                return true;
+            }
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space) => {
+                let dialog = self.paste_dialog.take().unwrap();
+                match dialog.selected {
+                    0 => {
+                        if let Some(terminal) = self.terminals.get(&dialog.pane_id) {
+                            terminal.input(dialog.paste_text.as_bytes());
+                        }
+                    }
+                    1 => {
+                        if let Some(terminal) = self.terminals.get(&dialog.pane_id) {
+                            terminal.input(dialog.stripped_text.as_bytes());
+                        }
+                    }
+                    _ => {}
+                }
+                return true;
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn overlay_paste_dialog(
+        cells: &mut [Vec<RenderCell>],
+        dialog: &PasteDialog,
+        color_scheme: &ColorScheme,
+    ) {
+        let height = cells.len();
+        if height == 0 {
+            return;
+        }
+        let width = cells[0].len();
+        if width == 0 {
+            return;
+        }
+
+        let mut panel_width = width.min(44);
+        if panel_width < PASTE_DIALOG_MIN_WIDTH {
+            panel_width = width.min(PASTE_DIALOG_MIN_WIDTH);
+        }
+        let panel_height = height.min(7);
+        if panel_width < 4 || panel_height < 4 {
+            return;
+        }
+
+        let start_col = (width.saturating_sub(panel_width)) / 2;
+        let start_row = (height.saturating_sub(panel_height)) / 2;
+
+        let fg = color_scheme.foreground;
+        let bright = color_scheme.colors[15];
+        let border = color_scheme.colors[6];
+        let bg = [0.0, 0.0, 0.0, 0.0];
+        let highlight_bg = [fg[0] * 0.15, fg[1] * 0.15, fg[2] * 0.15, 1.0];
+
+        let last_row = panel_height - 1;
+        let last_col = panel_width - 1;
+        let title = " Paste ";
+        let title_start = (panel_width.saturating_sub(title.len())) / 2;
+
+        for row in 0..panel_height {
+            let grid_row = start_row + row;
+            if grid_row >= height {
+                continue;
+            }
+            for col in 0..panel_width {
+                let grid_col = start_col + col;
+                if grid_col >= width {
+                    continue;
+                }
+                let (c, cell_fg, cell_bg) = if row == 0 {
+                    if col == 0 {
+                        ('┌', border, bg)
+                    } else if col == last_col {
+                        ('┐', border, bg)
+                    } else if col >= title_start && col < title_start + title.len() {
+                        let c = title.chars().nth(col - title_start).unwrap_or('─');
+                        (c, bright, bg)
+                    } else {
+                        ('─', border, bg)
+                    }
+                } else if row == last_row {
+                    if col == 0 {
+                        ('└', border, bg)
+                    } else if col == last_col {
+                        ('┘', border, bg)
+                    } else {
+                        ('─', border, bg)
+                    }
+                } else if col == 0 || col == last_col {
+                    ('│', border, bg)
+                } else {
+                    (' ', fg, bg)
+                };
+
+                cells[grid_row][grid_col] = RenderCell {
+                    c,
+                    fg: cell_fg,
+                    bg: cell_bg,
+                    is_wide: false,
+                };
+            }
+        }
+
+        let inner_left = start_col + 1;
+        let inner_width = panel_width - 2;
+        let inner_top = start_row + 1;
+        let inner_bottom = start_row + panel_height - 2;
+        let mut line_row = inner_top;
+        if panel_height >= 7 {
+            line_row += 1;
+        }
+
+        let mut lf_count = 0usize;
+        let mut cr_count = 0usize;
+        let mut control_counts: std::collections::BTreeMap<u32, usize> =
+            std::collections::BTreeMap::new();
+        for c in dialog.original_text.chars() {
+            if c == '\n' {
+                lf_count += 1;
+            } else if c == '\r' {
+                cr_count += 1;
+            } else if c.is_control() {
+                *control_counts.entry(c as u32).or_insert(0) += 1;
+            }
+        }
+        let control_count: usize = control_counts.values().sum();
+        let ctrl_details = if control_count == 0 {
+            None
+        } else {
+            let mut parts: Vec<String> = Vec::new();
+            for (code, count) in control_counts.iter().take(3) {
+                parts.push(format!("0x{:02X} x{}", code, count));
+            }
+            let suffix = if control_counts.len() > 3 { ",..." } else { "" };
+            Some(format!("Ctrl: {}{}", parts.join(", "), suffix))
+        };
+        let mut detail_parts = Vec::new();
+        if lf_count > 0 {
+            detail_parts.push(format!("LF {}", lf_count));
+        }
+        if cr_count > 0 {
+            detail_parts.push(format!("CR {}", cr_count));
+        }
+        if control_count > 0 {
+            let ctrl = ctrl_details.unwrap_or_else(|| format!("Ctrl {}", control_count));
+            detail_parts.push(ctrl);
+        }
+        let detail_line = if detail_parts.is_empty() {
+            "No control chars detected".to_string()
+        } else {
+            detail_parts.join(", ")
+        };
+
+        let bracketed_line = format!(
+            "Bracketed paste: {}",
+            if dialog.bracketed_paste_enabled {
+                "ON"
+            } else {
+                "OFF"
+            }
+        );
+        let cr_line = format!(
+            "Strip CR: {}",
+            if dialog.strip_cr_enabled { "ON" } else { "OFF" }
+        );
+        let message_lines = [
+            "Unsafe paste detected".to_string(),
+            detail_line,
+            bracketed_line,
+            cr_line,
+        ];
+        for line in message_lines {
+            if line_row >= inner_bottom {
+                break;
+            }
+            let line_len = line.chars().count();
+            let start = inner_left + (inner_width.saturating_sub(line_len)) / 2;
+            for (i, ch) in line.chars().enumerate() {
+                let col = start + i;
+                if col < inner_left + inner_width && line_row < height {
+                    cells[line_row][col] = RenderCell {
+                        c: ch,
+                        fg: bright,
+                        bg,
+                        is_wide: false,
+                    };
+                }
+            }
+            line_row += 1;
+        }
+
+        let button_row = inner_bottom;
+        let buttons = ["Paste", "Strip Ctrl", "Cancel"];
+        let rendered_buttons: Vec<String> = buttons
+            .iter()
+            .map(|label| format!("[ {} ]", label))
+            .collect();
+        let buttons_width: usize = rendered_buttons.iter().map(|b| b.len()).sum::<usize>()
+            + (rendered_buttons.len() - 1) * 2;
+        let buttons_start = inner_left + (inner_width.saturating_sub(buttons_width)) / 2;
+
+        let mut cursor = buttons_start;
+        for (idx, button) in rendered_buttons.iter().enumerate() {
+            let is_selected = dialog.selected == idx;
+            let button_fg = if is_selected { bright } else { fg };
+            let button_bg = if is_selected { highlight_bg } else { bg };
+            for ch in button.chars() {
+                if button_row < height && cursor < inner_left + inner_width {
+                    cells[button_row][cursor] = RenderCell {
+                        c: ch,
+                        fg: button_fg,
+                        bg: button_bg,
+                        is_wide: false,
+                    };
+                }
+                cursor += 1;
+            }
+            cursor += 2;
         }
     }
 
@@ -887,7 +1201,7 @@ impl App {
         let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
         let focused_pane = self.layout.focused_pane();
 
-        let mut pane_renders: Vec<(f32, f32, Vec<Vec<RenderCell>>)> = Vec::new();
+        let mut pane_renders: Vec<(PaneId, f32, f32, Vec<Vec<RenderCell>>)> = Vec::new();
 
         for pane_id in self.layout.panes() {
             let Some(rect) = rects.get(pane_id) else {
@@ -920,6 +1234,18 @@ impl App {
                             ""
                         }
                     );
+                }
+            }
+
+            // Check for bracketed paste mode changes
+            let bracketed_enabled = term_mode.contains(TermMode::BRACKETED_PASTE);
+            let prev_bracketed = self.bracketed_paste_state.get(pane_id).copied();
+            if prev_bracketed != Some(bracketed_enabled) {
+                self.bracketed_paste_state
+                    .insert(*pane_id, bracketed_enabled);
+                if prev_bracketed.is_some() {
+                    self.bracketed_paste_message =
+                        Some((*pane_id, Instant::now(), bracketed_enabled));
                 }
             }
 
@@ -1041,7 +1367,7 @@ impl App {
                     .collect();
             }
 
-            pane_renders.push((x_offset, y_offset, cells));
+            pane_renders.push((*pane_id, x_offset, y_offset, cells));
         }
 
         // Calculate separators from pane boundaries
@@ -1115,9 +1441,18 @@ impl App {
         }
 
         // Convert to the format render_panes expects
+        if let Some(dialog) = &self.paste_dialog {
+            if let Some((_, _, _, cells)) = pane_renders
+                .iter_mut()
+                .find(|(pane_id, _, _, _)| *pane_id == dialog.pane_id)
+            {
+                Self::overlay_paste_dialog(cells, dialog, &color_scheme);
+            }
+        }
+
         let panes: Vec<(f32, f32, &[Vec<RenderCell>])> = pane_renders
             .iter()
-            .map(|(x, y, cells)| (*x, *y, cells.as_slice()))
+            .map(|(_, x, y, cells)| (*x, *y, cells.as_slice()))
             .collect();
 
         // Calculate focus rectangle (only show when multiple panes)
@@ -1255,6 +1590,38 @@ impl App {
                     // Message expired, clear it
                     self.kitty_mode_message = None;
                 }
+            }
+        }
+
+        // Show bracketed paste mode status message (top right of pane)
+        if let Some((pane_id, start_time, enabled)) = self.bracketed_paste_message {
+            let elapsed = start_time.elapsed().as_secs_f32();
+            if elapsed < BRACKETED_MSG_DURATION {
+                if let Some(rect) = rects.get(&pane_id) {
+                    let msg = if enabled {
+                        "Bracketed paste enabled"
+                    } else {
+                        "Bracketed paste disabled"
+                    };
+                    let msg_width = msg.len() as f32 * cell_w;
+                    let x =
+                        (rect.x + rect.width) * win_width as f32 - msg_width / 2.0 - PANE_PADDING;
+                    let mut y = rect.y * win_height as f32 + cell_h + PANE_PADDING;
+
+                    if let Some((kitty_pane, kitty_start, _kitty_enabled, kitty_compat)) =
+                        self.kitty_mode_message
+                    {
+                        let kitty_elapsed = kitty_start.elapsed().as_secs_f32();
+                        if kitty_pane == pane_id && kitty_elapsed < KITTY_MSG_DURATION {
+                            let kitty_lines = if kitty_compat { 2 } else { 1 };
+                            y += cell_h * 1.2 * kitty_lines as f32;
+                        }
+                    }
+
+                    size_indicators.push((x, y, msg.to_string()));
+                }
+            } else {
+                self.bracketed_paste_message = None;
             }
         }
 
@@ -1973,6 +2340,12 @@ impl ApplicationHandler for App {
                     let shift = self.modifiers.shift_key();
                     let super_key = self.modifiers.super_key();
 
+                    if self.paste_dialog.is_some()
+                        && self.handle_paste_dialog_input(&event.logical_key)
+                    {
+                        return;
+                    }
+
                     // Shift+Ctrl+Enter: Add new pane
                     if ctrl && shift && event.logical_key == Key::Named(NamedKey::Enter) {
                         self.add_pane();
@@ -2065,8 +2438,22 @@ impl ApplicationHandler for App {
                         if let Some(clipboard) = &mut self.clipboard {
                             if let Ok(text) = clipboard.get_text() {
                                 let focused = self.layout.focused_pane();
-                                if let Some(terminal) = self.terminals.get(&focused) {
-                                    terminal.input(text.as_bytes());
+                                if self.config.behavior.confirm_unsafe_paste
+                                    && Self::paste_needs_confirmation(&text)
+                                {
+                                    let bracketed =
+                                        self.terminals.get(&focused).is_some_and(|terminal| {
+                                            terminal.term_mode().contains(TermMode::BRACKETED_PASTE)
+                                        });
+                                    let strip_cr = self.config.behavior.strip_paste_cr;
+                                    self.open_paste_dialog(focused, text, bracketed, strip_cr);
+                                } else if let Some(terminal) = self.terminals.get(&focused) {
+                                    let paste_text = if self.config.behavior.strip_paste_cr {
+                                        Self::strip_carriage_returns(&text)
+                                    } else {
+                                        text
+                                    };
+                                    terminal.input(paste_text.as_bytes());
                                 }
                             }
                         }

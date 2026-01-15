@@ -401,6 +401,10 @@ pub struct BehaviorSettings {
     pub restore_session: bool,
     /// Check GitHub for new releases on startup
     pub check_for_updates: bool,
+    /// Require confirmation before pasting text containing newlines or control codes
+    pub confirm_unsafe_paste: bool,
+    /// Strip carriage returns from pasted text
+    pub strip_paste_cr: bool,
 }
 
 impl Default for BehaviorSettings {
@@ -411,6 +415,8 @@ impl Default for BehaviorSettings {
             show_kitty_message: true,
             restore_session: true,
             check_for_updates: true,
+            confirm_unsafe_paste: true,
+            strip_paste_cr: true,
         }
     }
 }

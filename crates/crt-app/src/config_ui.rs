@@ -75,6 +75,8 @@ pub enum ConfigField {
     ColorSchemeField,
     // Behavior tab
     AutoCopySelection,
+    ConfirmUnsafePaste,
+    StripPasteCr,
     ShowStartupHint,
     ShowKittyMessage,
     CheckForUpdates,
@@ -119,6 +121,8 @@ impl ConfigField {
             ConfigField::ColorSchemeField,
             // Behavior tab
             ConfigField::AutoCopySelection,
+            ConfigField::ConfirmUnsafePaste,
+            ConfigField::StripPasteCr,
             ConfigField::ShowStartupHint,
             ConfigField::ShowKittyMessage,
             ConfigField::CheckForUpdates,
@@ -171,6 +175,8 @@ impl ConfigField {
             ConfigField::HighDpiBdfFontFamily => "HiDPI BDF",
             ConfigField::ColorSchemeField => "Colors",
             ConfigField::AutoCopySelection => "Auto-copy",
+            ConfigField::ConfirmUnsafePaste => "Paste guard",
+            ConfigField::StripPasteCr => "Strip CR",
             ConfigField::ShowStartupHint => "Startup hint",
             ConfigField::ShowKittyMessage => "Kitty msg",
             ConfigField::CheckForUpdates => "Check updates",
@@ -208,6 +214,8 @@ impl ConfigField {
             ConfigField::PerPaneCrt
                 | ConfigField::BezelEnabled
                 | ConfigField::AutoCopySelection
+                | ConfigField::ConfirmUnsafePaste
+                | ConfigField::StripPasteCr
                 | ConfigField::ShowStartupHint
                 | ConfigField::ShowKittyMessage
                 | ConfigField::CheckForUpdates
@@ -269,6 +277,8 @@ impl ConfigField {
             | ConfigField::ColorSchemeField => Some(ConfigTab::Appearance),
             // Behavior tab
             ConfigField::AutoCopySelection
+            | ConfigField::ConfirmUnsafePaste
+            | ConfigField::StripPasteCr
             | ConfigField::ShowStartupHint
             | ConfigField::ShowKittyMessage
             | ConfigField::CheckForUpdates => Some(ConfigTab::Behavior),
@@ -455,6 +465,15 @@ impl ConfigUI {
             ConfigField::AutoCopySelection => {
                 self.config.behavior.auto_copy_selection =
                     !self.config.behavior.auto_copy_selection;
+                None
+            }
+            ConfigField::ConfirmUnsafePaste => {
+                self.config.behavior.confirm_unsafe_paste =
+                    !self.config.behavior.confirm_unsafe_paste;
+                None
+            }
+            ConfigField::StripPasteCr => {
+                self.config.behavior.strip_paste_cr = !self.config.behavior.strip_paste_cr;
                 None
             }
             ConfigField::ShowStartupHint => {
@@ -666,6 +685,12 @@ impl ConfigUI {
             }
             ConfigField::AutoCopySelection => {
                 self.config.behavior.auto_copy_selection = delta > 0.0;
+            }
+            ConfigField::ConfirmUnsafePaste => {
+                self.config.behavior.confirm_unsafe_paste = delta > 0.0;
+            }
+            ConfigField::StripPasteCr => {
+                self.config.behavior.strip_paste_cr = delta > 0.0;
             }
             ConfigField::ShowStartupHint => {
                 self.config.behavior.show_startup_hint = delta > 0.0;
@@ -1067,6 +1092,8 @@ impl ConfigUI {
                 ConfigField::PerPaneCrt => self.config.per_pane_crt,
                 ConfigField::BezelEnabled => self.config.effects.bezel_enabled,
                 ConfigField::AutoCopySelection => self.config.behavior.auto_copy_selection,
+                ConfigField::ConfirmUnsafePaste => self.config.behavior.confirm_unsafe_paste,
+                ConfigField::StripPasteCr => self.config.behavior.strip_paste_cr,
                 ConfigField::ShowStartupHint => self.config.behavior.show_startup_hint,
                 ConfigField::ShowKittyMessage => self.config.behavior.show_kitty_message,
                 ConfigField::CheckForUpdates => self.config.behavior.check_for_updates,
