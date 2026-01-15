@@ -1,5 +1,4 @@
-/target
-Cargo.lock
-
-# Commercial fonts (not for distribution)
-**/PragmataPro*
+.DS_Store
+.claude/
+*.dmg
+target/

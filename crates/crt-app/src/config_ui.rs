@@ -67,6 +67,11 @@ pub enum ConfigField {
     FontSize,      // TTF font size (hidden when BDF selected)
     UiScale,       // UI scaling for TTF fonts (hidden when BDF selected)
     BdfFontFamily, // BDF font selector (hidden when TTF selected)
+    HighDpiFontType,
+    HighDpiFontFamily,
+    HighDpiFontSize,
+    HighDpiUiScale,
+    HighDpiBdfFontFamily,
     ColorSchemeField,
     // Behavior tab
     AutoCopySelection,
@@ -106,6 +111,11 @@ impl ConfigField {
             ConfigField::FontSize,
             ConfigField::UiScale,
             ConfigField::BdfFontFamily,
+            ConfigField::HighDpiFontType,
+            ConfigField::HighDpiFontFamily,
+            ConfigField::HighDpiFontSize,
+            ConfigField::HighDpiUiScale,
+            ConfigField::HighDpiBdfFontFamily,
             ConfigField::ColorSchemeField,
             // Behavior tab
             ConfigField::AutoCopySelection,
@@ -122,7 +132,10 @@ impl ConfigField {
     fn has_separator_before(&self) -> bool {
         matches!(
             self,
-            ConfigField::PerPaneCrt | ConfigField::BezelEnabled | ConfigField::BeamSimulation
+            ConfigField::PerPaneCrt
+                | ConfigField::BezelEnabled
+                | ConfigField::BeamSimulation
+                | ConfigField::HighDpiFontType
         )
     }
 
@@ -151,6 +164,11 @@ impl ConfigField {
             ConfigField::FontSize => "Font Size",
             ConfigField::UiScale => "UI Scale",
             ConfigField::BdfFontFamily => "BDF Font",
+            ConfigField::HighDpiFontType => "HiDPI Type",
+            ConfigField::HighDpiFontFamily => "HiDPI TTF",
+            ConfigField::HighDpiFontSize => "HiDPI Size",
+            ConfigField::HighDpiUiScale => "HiDPI Scale",
+            ConfigField::HighDpiBdfFontFamily => "HiDPI BDF",
             ConfigField::ColorSchemeField => "Colors",
             ConfigField::AutoCopySelection => "Auto-copy",
             ConfigField::ShowStartupHint => "Startup hint",
@@ -179,6 +197,8 @@ impl ConfigField {
                 | ConfigField::ContentScaleY
                 | ConfigField::FontSize
                 | ConfigField::UiScale
+                | ConfigField::HighDpiFontSize
+                | ConfigField::HighDpiUiScale
         )
     }
 
@@ -192,6 +212,7 @@ impl ConfigField {
                 | ConfigField::ShowKittyMessage
                 | ConfigField::CheckForUpdates
                 | ConfigField::FontType
+                | ConfigField::HighDpiFontType
                 | ConfigField::ScanlineMode
                 | ConfigField::BeamSimulation
                 | ConfigField::Interlace
@@ -201,7 +222,11 @@ impl ConfigField {
     fn is_selector(&self) -> bool {
         matches!(
             self,
-            ConfigField::FontFamily | ConfigField::BdfFontFamily | ConfigField::ColorSchemeField
+            ConfigField::FontFamily
+                | ConfigField::BdfFontFamily
+                | ConfigField::HighDpiFontFamily
+                | ConfigField::HighDpiBdfFontFamily
+                | ConfigField::ColorSchemeField
         )
     }
 
@@ -236,6 +261,11 @@ impl ConfigField {
             | ConfigField::FontSize
             | ConfigField::UiScale
             | ConfigField::BdfFontFamily
+            | ConfigField::HighDpiFontType
+            | ConfigField::HighDpiFontFamily
+            | ConfigField::HighDpiFontSize
+            | ConfigField::HighDpiUiScale
+            | ConfigField::HighDpiBdfFontFamily
             | ConfigField::ColorSchemeField => Some(ConfigTab::Appearance),
             // Behavior tab
             ConfigField::AutoCopySelection
@@ -266,8 +296,12 @@ impl ConfigField {
             ConfigField::FontFamily | ConfigField::FontSize | ConfigField::UiScale => {
                 config.bdf_font.is_none()
             }
+            ConfigField::HighDpiFontFamily
+            | ConfigField::HighDpiFontSize
+            | ConfigField::HighDpiUiScale => config.high_dpi_bdf_font.is_none(),
             // BDF-specific fields: only show when BDF is selected
             ConfigField::BdfFontFamily => config.bdf_font.is_some(),
+            ConfigField::HighDpiBdfFontFamily => config.high_dpi_bdf_font.is_some(),
             // Interlace only shows when beam simulation is enabled
             ConfigField::Interlace => config.effects.beam_simulation_enabled,
             // All other fields always show
@@ -445,6 +479,14 @@ impl ConfigUI {
                 }
                 None
             }
+            ConfigField::HighDpiFontType => {
+                if self.config.high_dpi_bdf_font.is_some() {
+                    self.config.high_dpi_bdf_font = None;
+                } else {
+                    self.config.high_dpi_bdf_font = Some(BdfFont::Fixed9x18);
+                }
+                None
+            }
             ConfigField::ScanlineMode => {
                 // Toggle between Row-based and Pixel scanlines
                 self.config.effects.scanline_mode = match self.config.effects.scanline_mode {
@@ -546,6 +588,13 @@ impl ConfigUI {
                     self.config.bdf_font = Some(BdfFont::Fixed9x18);
                 }
             }
+            ConfigField::HighDpiFontType => {
+                if self.config.high_dpi_bdf_font.is_some() {
+                    self.config.high_dpi_bdf_font = None;
+                } else {
+                    self.config.high_dpi_bdf_font = Some(BdfFont::Fixed9x18);
+                }
+            }
             ConfigField::FontFamily => {
                 if delta > 0.0 {
                     self.config.font = self.config.font.next();
@@ -553,16 +602,42 @@ impl ConfigUI {
                     self.config.font = self.config.font.prev();
                 }
             }
+            ConfigField::HighDpiFontFamily => {
+                if delta > 0.0 {
+                    self.config.high_dpi_font = self.config.high_dpi_font.next();
+                } else {
+                    self.config.high_dpi_font = self.config.high_dpi_font.prev();
+                }
+            }
             ConfigField::FontSize => {
                 let change = if delta > 0.0 { 1.0 } else { -1.0 };
                 self.config.font_size = (self.config.font_size + change).clamp(8.0, 32.0);
+            }
+            ConfigField::HighDpiFontSize => {
+                let change = if delta > 0.0 { 1.0 } else { -1.0 };
+                self.config.high_dpi_font_size =
+                    (self.config.high_dpi_font_size + change).clamp(8.0, 32.0);
             }
             ConfigField::UiScale => {
                 let change = if delta > 0.0 { 0.25 } else { -0.25 };
                 self.config.ui_scale = (self.config.ui_scale + change).clamp(1.0, 3.0);
             }
+            ConfigField::HighDpiUiScale => {
+                let change = if delta > 0.0 { 0.25 } else { -0.25 };
+                self.config.high_dpi_ui_scale =
+                    (self.config.high_dpi_ui_scale + change).clamp(1.0, 3.0);
+            }
             ConfigField::BdfFontFamily => {
                 if let Some(ref mut bdf) = self.config.bdf_font {
+                    if delta > 0.0 {
+                        *bdf = bdf.next();
+                    } else {
+                        *bdf = bdf.prev();
+                    }
+                }
+            }
+            ConfigField::HighDpiBdfFontFamily => {
+                if let Some(ref mut bdf) = self.config.high_dpi_bdf_font {
                     if delta > 0.0 {
                         *bdf = bdf.next();
                     } else {
@@ -636,6 +711,8 @@ impl ConfigUI {
             ConfigField::ContentScaleY => (self.config.effects.content_scale_y - 0.8) / 0.4, // 0.8 to 1.2 range
             ConfigField::FontSize => (self.config.font_size - 8.0) / 24.0, // 8-32 range
             ConfigField::UiScale => (self.config.ui_scale - 1.0) / 2.0,    // 1.0-3.0 range
+            ConfigField::HighDpiFontSize => (self.config.high_dpi_font_size - 8.0) / 24.0,
+            ConfigField::HighDpiUiScale => (self.config.high_dpi_ui_scale - 1.0) / 2.0,
             _ => 0.0,
         }
     }
@@ -665,7 +742,12 @@ impl ConfigUI {
 
     /// Render the config UI overlay
     /// Returns cells to be rendered at (row, col) with the given offsets
-    pub fn render(&self, width_cells: usize, height_cells: usize) -> Vec<Vec<RenderCell>> {
+    pub fn render(
+        &self,
+        width_cells: usize,
+        height_cells: usize,
+        is_high_dpi: bool,
+    ) -> Vec<Vec<RenderCell>> {
         let panel_width = 44;
         let panel_height = self.panel_height();
 
@@ -698,8 +780,13 @@ impl ConfigUI {
                 let panel_col = col - start_col;
                 let panel_row = row - start_row;
 
-                let (c, fg, bg) =
-                    self.render_panel_cell(panel_col, panel_row, panel_width, panel_height);
+                let (c, fg, bg) = self.render_panel_cell(
+                    panel_col,
+                    panel_row,
+                    panel_width,
+                    panel_height,
+                    is_high_dpi,
+                );
                 cells.push(RenderCell {
                     c,
                     fg,
@@ -720,6 +807,7 @@ impl ConfigUI {
         row: usize,
         width: usize,
         height: usize,
+        is_high_dpi: bool,
     ) -> (char, [f32; 4], [f32; 4]) {
         let last_row = height - 1;
         let fg = self.fg_color();
@@ -781,18 +869,33 @@ impl ConfigUI {
             return (' ', fg, bg);
         }
 
+        if self.current_tab == ConfigTab::Appearance && content_row == 0 {
+            let mode = if is_high_dpi { "HiDPI" } else { "Normal" };
+            let line = format!("  Mode: {}", mode);
+            if content_col < line.len() {
+                let c = line.chars().nth(content_col).unwrap_or(' ');
+                return (c, bright, bg);
+            }
+            return (' ', fg, bg);
+        }
+
         let fields = self.current_fields();
+        let field_content_row = if self.current_tab == ConfigTab::Appearance {
+            content_row.saturating_sub(1)
+        } else {
+            content_row
+        };
 
         // Calculate field index, accounting for separator lines
         let mut field_idx = 0;
         let mut display_row = 0;
 
-        while field_idx < fields.len() && display_row < content_row {
+        while field_idx < fields.len() && display_row < field_content_row {
             display_row += 1;
-            if display_row <= content_row {
+            if display_row <= field_content_row {
                 // Check if next field has separator before it
                 if field_idx + 1 < fields.len() && fields[field_idx + 1].has_separator_before() {
-                    if display_row == content_row {
+                    if display_row == field_content_row {
                         // This row is the separator
                         return (' ', fg, bg);
                     }
@@ -802,7 +905,7 @@ impl ConfigUI {
             }
         }
 
-        if field_idx < fields.len() && display_row == content_row {
+        if field_idx < fields.len() && display_row == field_content_row {
             let field = fields[field_idx];
             let is_selected = field_idx == self.selected;
 
@@ -897,6 +1000,8 @@ impl ConfigUI {
                 }
                 ConfigField::FontSize => format!("{:.0}px", self.config.font_size),
                 ConfigField::UiScale => format!("{:.2}x", self.config.ui_scale),
+                ConfigField::HighDpiFontSize => format!("{:.0}px", self.config.high_dpi_font_size),
+                ConfigField::HighDpiUiScale => format!("{:.2}x", self.config.high_dpi_ui_scale),
                 _ => String::new(),
             };
 
@@ -911,6 +1016,13 @@ impl ConfigUI {
                     .map(|f| f.label())
                     .unwrap_or("?")
                     .to_string(),
+                ConfigField::HighDpiFontFamily => self.config.high_dpi_font.label().to_string(),
+                ConfigField::HighDpiBdfFontFamily => self
+                    .config
+                    .high_dpi_bdf_font
+                    .map(|f| f.label())
+                    .unwrap_or("?")
+                    .to_string(),
                 ConfigField::ColorSchemeField => self.config.color_scheme.name.clone(),
                 _ => "?".to_string(),
             };
@@ -918,8 +1030,14 @@ impl ConfigUI {
             format!("{}{:12} < {:^13} >", prefix, label, value_name)
         } else if field.is_toggle() {
             // FontType is special - shows TTF/BDF instead of ON/OFF, same width as selectors
-            if field == ConfigField::FontType {
-                let type_name = if self.config.bdf_font.is_some() {
+            if field == ConfigField::FontType || field == ConfigField::HighDpiFontType {
+                let type_name = if field == ConfigField::HighDpiFontType {
+                    if self.config.high_dpi_bdf_font.is_some() {
+                        "BDF"
+                    } else {
+                        "TTF"
+                    }
+                } else if self.config.bdf_font.is_some() {
                     "BDF"
                 } else {
                     "TTF"

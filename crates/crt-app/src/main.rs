@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use arboard::Clipboard;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -19,7 +19,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
-use crt_core::{ColorScheme, Config, ScanlineMode, SessionData, UpdateInfo};
+use crt_core::{BdfFont, ColorScheme, Config, Font, ScanlineMode, SessionData, UpdateInfo};
 use crt_layout::{LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::{TermMode, Terminal};
@@ -315,12 +315,30 @@ const SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(1500);
 const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
 const DEFAULT_FPS: u32 = 60; // Fallback if we can't detect refresh rate
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
+const HIGH_DPI_SCALE_THRESHOLD: f64 = 1.5;
 
 // Startup hint timing (after power-on animation)
 const POWERON_DURATION: f32 = 1.05; // Must match shader's POWERON_TOTAL
 const STARTUP_HINT_DELAY: f32 = POWERON_DURATION;
 const STARTUP_HINT_DURATION: f32 = 2.0;
 const STARTUP_HINT_FADE: f32 = 0.5;
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveFontSettings {
+    font: Font,
+    font_size: f32,
+    ui_scale: f32,
+    bdf_font: Option<BdfFont>,
+}
+
+impl ActiveFontSettings {
+    fn approx_eq(self, other: Self) -> bool {
+        self.font == other.font
+            && self.bdf_font == other.bdf_font
+            && (self.font_size - other.font_size).abs() < 0.1
+            && (self.ui_scale - other.ui_scale).abs() < 0.01
+    }
+}
 
 struct App {
     window: Option<Arc<Window>>,
@@ -359,6 +377,7 @@ struct App {
     update_receiver: Option<Receiver<UpdateInfo>>,
     /// Cached update info after check completes
     update_info: Option<UpdateInfo>,
+    last_font_settings: Option<ActiveFontSettings>,
 }
 
 impl App {
@@ -398,6 +417,7 @@ impl App {
             scroll_accumulator: 0.0,
             update_receiver: None,
             update_info: None,
+            last_font_settings: None,
         }
     }
 
@@ -423,6 +443,64 @@ impl App {
         } else {
             &self.config
         }
+    }
+
+    fn is_high_dpi(scale_factor: f64) -> bool {
+        scale_factor >= HIGH_DPI_SCALE_THRESHOLD
+    }
+
+    fn active_font_settings(config: &Config, scale_factor: f64) -> ActiveFontSettings {
+        if Self::is_high_dpi(scale_factor) {
+            ActiveFontSettings {
+                font: config.high_dpi_font,
+                font_size: config.high_dpi_font_size,
+                ui_scale: config.high_dpi_ui_scale,
+                bdf_font: config.high_dpi_bdf_font,
+            }
+        } else {
+            ActiveFontSettings {
+                font: config.font,
+                font_size: config.font_size,
+                ui_scale: config.ui_scale,
+                bdf_font: config.bdf_font,
+            }
+        }
+    }
+
+    fn current_scale_factor(&self) -> f64 {
+        self.window
+            .as_ref()
+            .map(|window| window.scale_factor())
+            .unwrap_or(1.0)
+    }
+
+    fn apply_font_settings(&mut self, config: &Config, scale_factor: f64) -> bool {
+        let Some(renderer) = &mut self.renderer else {
+            return false;
+        };
+
+        let settings = Self::active_font_settings(config, scale_factor);
+        let needs_update = self
+            .last_font_settings
+            .map(|prev| !prev.approx_eq(settings))
+            .unwrap_or(true);
+
+        if !needs_update {
+            return false;
+        }
+
+        if let Some(bdf_font) = settings.bdf_font {
+            if let Err(e) = renderer.set_bdf_font(bdf_font) {
+                tracing::error!("Failed to apply BDF font: {}", e);
+            }
+        } else if let Err(e) =
+            renderer.set_font(settings.font, settings.font_size * settings.ui_scale)
+        {
+            tracing::error!("Failed to apply font: {}", e);
+        }
+
+        self.last_font_settings = Some(settings);
+        true
     }
 
     /// Convert pixel coordinates to cell position, also returns debug info:
@@ -777,6 +855,12 @@ impl App {
         // Record frame time for FPS display
         let fps = self.record_frame_time(dt);
 
+        let scale_factor = self
+            .window
+            .as_ref()
+            .map(|window| window.scale_factor())
+            .unwrap_or(1.0);
+
         // Get mouse debug info before mutable borrow (None if in the void or debug disabled)
         let mouse_debug = if self.debug_grid {
             self.pixel_to_cell_debug(self.mouse_pos.0, self.mouse_pos.1)
@@ -788,6 +872,11 @@ impl App {
         let current_cfg = self.current_config();
         let color_scheme = current_cfg.color_scheme.clone();
         let per_pane_crt = current_cfg.per_pane_crt;
+
+        if !self.config_ui.visible {
+            let config = self.config.clone();
+            self.apply_font_settings(&config, scale_factor);
+        }
 
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -1262,25 +1351,25 @@ impl App {
 
         // If config UI is visible, render it instead of terminals
         if self.config_ui.visible {
-            // Live preview font changes - handle both BDF and TTF
-            if let Some(bdf_font) = self.config_ui.config.bdf_font {
+            let preview_font = Self::active_font_settings(&self.config_ui.config, scale_factor);
+            if let Some(bdf_font) = preview_font.bdf_font {
                 if let Err(e) = renderer.set_bdf_font(bdf_font) {
                     tracing::error!("Failed to preview BDF font: {}", e);
                 }
-            } else {
-                let preview_font = self.config_ui.config.font;
-                let preview_font_size =
-                    self.config_ui.config.font_size * self.config_ui.config.ui_scale;
-                if let Err(e) = renderer.set_font(preview_font, preview_font_size) {
-                    tracing::error!("Failed to preview font: {}", e);
-                }
+            } else if let Err(e) = renderer.set_font(
+                preview_font.font,
+                preview_font.font_size * preview_font.ui_scale,
+            ) {
+                tracing::error!("Failed to preview font: {}", e);
             }
 
             let (cell_w, cell_h) = renderer.cell_size();
             let width_cells = (win_width as f32 / cell_w) as usize;
             let height_cells = (win_height as f32 / cell_h) as usize;
 
-            let ui_cells = self.config_ui.render(width_cells, height_cells);
+            let ui_cells =
+                self.config_ui
+                    .render(width_cells, height_cells, Self::is_high_dpi(scale_factor));
             let ui_panes = vec![(0.0_f32, 0.0_f32, ui_cells.as_slice())];
 
             // Use config_ui settings for live preview
@@ -1332,16 +1421,6 @@ impl App {
             }
         } else {
             // Ensure we're using the saved config's font (in case preview changed it)
-            // BDF fonts take priority over TTF fonts
-            if self.config.bdf_font.is_none() {
-                if let Err(e) = renderer.set_font(
-                    self.config.font,
-                    self.config.font_size * self.config.ui_scale,
-                ) {
-                    tracing::error!("Failed to restore font: {}", e);
-                }
-            }
-
             let fg = self.config.color_scheme.foreground;
             let effects = EffectParams {
                 curvature: self.config.effects.screen_curvature,
@@ -1514,26 +1593,27 @@ impl ApplicationHandler for App {
                 .expect("Failed to create window"),
         );
 
-        // Initialize renderer with font from config
-        // Apply ui_scale to font_size for TTF fonts (BDF fonts ignore scaling)
+        // Initialize renderer with font from config (scale-aware)
+        let scale_factor = window.scale_factor();
+        let active_font = Self::active_font_settings(&self.config, scale_factor);
         let mut renderer = pollster::block_on(Renderer::new(
             Arc::clone(&window),
-            self.config.font,
-            self.config.font_size * self.config.ui_scale,
+            active_font.font,
+            active_font.font_size * active_font.ui_scale,
         ))
         .expect("Failed to create renderer");
 
         // If BDF font is configured, load and apply it
-        if let Some(bdf_font) = self.config.bdf_font {
+        if let Some(bdf_font) = active_font.bdf_font {
             if let Err(e) = renderer.set_bdf_font(bdf_font) {
                 tracing::error!("Failed to load BDF font {:?}: {}", bdf_font, e);
             } else {
                 tracing::info!("Loaded BDF font: {}", bdf_font.label());
             }
         }
+        self.last_font_settings = Some(active_font);
 
         // Log scale factor for debugging
-        let scale_factor = window.scale_factor();
         let physical_size = window.inner_size();
         tracing::info!(
             "Window created: {}x{} physical pixels, scale factor: {}",
@@ -1659,6 +1739,19 @@ impl ApplicationHandler for App {
                 // Save window position
                 self.config.window_x = Some(position.x);
                 self.config.window_y = Some(position.y);
+                let scale_factor = self
+                    .window
+                    .as_ref()
+                    .map(|window| window.scale_factor())
+                    .unwrap_or(1.0);
+                let config = if self.config_ui.visible {
+                    self.config_ui.config.clone()
+                } else {
+                    self.config.clone()
+                };
+                if self.apply_font_settings(&config, scale_factor) {
+                    self.resize_terminals();
+                }
             }
             WindowEvent::Resized(new_size) => {
                 if let Some(renderer) = &mut self.renderer {
@@ -1669,6 +1762,34 @@ impl ApplicationHandler for App {
                 // Save window size
                 self.config.window_width = new_size.width;
                 self.config.window_height = new_size.height;
+            }
+            WindowEvent::ScaleFactorChanged {
+                scale_factor,
+                mut inner_size_writer,
+            } => {
+                let new_size = self
+                    .window
+                    .as_ref()
+                    .map(|window| window.inner_size())
+                    .unwrap_or_else(|| {
+                        PhysicalSize::new(self.config.window_width, self.config.window_height)
+                    });
+                let _ = inner_size_writer.request_inner_size(new_size);
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.resize(new_size.width, new_size.height);
+                    self.resize_terminals();
+                    self.last_resize = Some(Instant::now());
+                }
+                self.config.window_width = new_size.width;
+                self.config.window_height = new_size.height;
+                let config = if self.config_ui.visible {
+                    self.config_ui.config.clone()
+                } else {
+                    self.config.clone()
+                };
+                if self.apply_font_settings(&config, scale_factor) {
+                    self.resize_terminals();
+                }
             }
             WindowEvent::RedrawRequested => {
                 // Check for update check results
@@ -2021,55 +2142,10 @@ impl ApplicationHandler for App {
                                     match action {
                                         ConfigAction::Save => {
                                             let new_config = self.config_ui.save();
-                                            // Update font if changed
-                                            if let Some(renderer) = &mut self.renderer {
-                                                let font_changed = new_config.bdf_font
-                                                    != self.config.bdf_font
-                                                    || new_config.font != self.config.font
-                                                    || (new_config.font_size
-                                                        - self.config.font_size)
-                                                        .abs()
-                                                        > 0.1
-                                                    || (new_config.ui_scale - self.config.ui_scale)
-                                                        .abs()
-                                                        > 0.01;
-
-                                                if font_changed {
-                                                    // Apply the appropriate font type
-                                                    if let Some(bdf_font) = new_config.bdf_font {
-                                                        if let Err(e) =
-                                                            renderer.set_bdf_font(bdf_font)
-                                                        {
-                                                            tracing::error!(
-                                                                "Failed to change to BDF font: {}",
-                                                                e
-                                                            );
-                                                        } else {
-                                                            tracing::info!(
-                                                                "Font changed to BDF: {}",
-                                                                bdf_font.label()
-                                                            );
-                                                            self.config = new_config.clone();
-                                                            self.resize_terminals();
-                                                        }
-                                                    } else if let Err(e) = renderer.set_font(
-                                                        new_config.font,
-                                                        new_config.font_size * new_config.ui_scale,
-                                                    ) {
-                                                        tracing::error!(
-                                                            "Failed to change font: {}",
-                                                            e
-                                                        );
-                                                    } else {
-                                                        tracing::info!(
-                                                            "Font changed to {} at {}px",
-                                                            new_config.font.label(),
-                                                            new_config.font_size
-                                                        );
-                                                        self.config = new_config.clone();
-                                                        self.resize_terminals();
-                                                    }
-                                                }
+                                            let scale_factor = self.current_scale_factor();
+                                            if self.apply_font_settings(&new_config, scale_factor) {
+                                                self.config = new_config.clone();
+                                                self.resize_terminals();
                                             }
                                             self.config = new_config;
                                             if let Err(e) = self.config.save_to_default() {

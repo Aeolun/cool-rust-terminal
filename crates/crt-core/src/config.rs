@@ -436,6 +436,18 @@ pub struct Config {
     /// Optional BDF bitmap font (overrides TTF `font` if set)
     pub bdf_font: Option<BdfFont>,
 
+    /// Selected TTF font for high-DPI displays (used when high_dpi_bdf_font is None)
+    pub high_dpi_font: Font,
+
+    /// Font size in pixels for high-DPI displays (used for TTF fonts)
+    pub high_dpi_font_size: f32,
+
+    /// UI scaling factor (1.0-3.0) for high-DPI displays, only applied to TTF fonts
+    pub high_dpi_ui_scale: f32,
+
+    /// Optional BDF bitmap font for high-DPI displays (overrides high_dpi_font if set)
+    pub high_dpi_bdf_font: Option<BdfFont>,
+
     /// Color scheme (16 ANSI colors + fg/bg)
     pub color_scheme: ColorScheme,
 
@@ -463,6 +475,10 @@ impl Default for Config {
             font_size: 18.0,
             ui_scale: 1.0,
             bdf_font: None,
+            high_dpi_font: Font::default(),
+            high_dpi_font_size: 18.0,
+            high_dpi_ui_scale: 2.0,
+            high_dpi_bdf_font: None,
             color_scheme: ColorScheme::default(),
             window_width: 1200,
             window_height: 800,
