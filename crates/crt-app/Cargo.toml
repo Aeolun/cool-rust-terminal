@@ -51,3 +51,8 @@ tracing-subscriber = { workspace = true }
 pollster = { workspace = true }
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png"] }
+tracing-tracy = { workspace = true, optional = true }
+tracy-client = { workspace = true, optional = true }
+
+[features]
+tracy = ["tracing-tracy", "tracy-client"]

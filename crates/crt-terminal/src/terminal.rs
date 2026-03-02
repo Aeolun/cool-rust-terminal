@@ -213,13 +213,20 @@ impl Terminal {
         self.term.lock().resize(term_size);
     }
 
-    /// Access the terminal grid for rendering
+    /// Access the terminal grid for rendering.
     pub fn with_grid<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&Grid<alacritty_terminal::term::cell::Cell>) -> R,
     {
         let term = self.term.lock();
         f(term.grid())
+    }
+
+    /// Monotonically increasing count of lines that have scrolled off the top of the screen.
+    /// Reads directly from alacritty's Grid, which tracks this in scroll_up().
+    pub fn total_lines_scrolled(&self) -> u64 {
+        let term = self.term.lock();
+        term.grid().total_lines_scrolled()
     }
 
     /// Access terminal content including cursor for rendering

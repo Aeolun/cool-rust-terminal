@@ -258,6 +258,7 @@ impl TextPipeline {
         chars: &[(char, f32, f32, [f32; 4], bool)], // char, x, baseline_y, color, is_wide
     ) {
         // Update atlas texture with latest glyph data (new glyphs may have been added)
+        let _span = tracing::trace_span!("atlas_upload").entered();
         queue.write_texture(
             wgpu::ImageCopyTexture {
                 texture: &self.atlas_texture,
@@ -277,7 +278,9 @@ impl TextPipeline {
                 depth_or_array_layers: 1,
             },
         );
+        drop(_span);
 
+        let _span = tracing::trace_span!("build_glyph_vertices").entered();
         let mut vertices = Vec::with_capacity(chars.len() * 4);
         let mut indices = Vec::with_capacity(chars.len() * 6);
 

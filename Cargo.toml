@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "GPL-3.0"
 authors = ["Bart Riepe"]
@@ -64,3 +64,10 @@ libc = "0.2"
 
 # Compression
 zstd = "0.13"
+
+# Profiling
+tracing-tracy = "0.11"
+tracy-client = "0.18"
+
+[patch.crates-io]
+alacritty_terminal = { path = "vendor/alacritty/alacritty_terminal" }

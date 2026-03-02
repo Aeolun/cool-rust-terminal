@@ -349,6 +349,9 @@ struct App {
     terminals: HashMap<PaneId, Terminal>,
     modifiers: ModifiersState,
     selection: Selection,
+    /// Scroll counter snapshot when selection was created, for adjusting selection
+    /// as new output pushes content up.
+    selection_scroll_anchor: Option<u64>,
     mouse_pos: (f64, f64),
     clipboard: Option<Clipboard>,
     last_grid: Vec<Vec<char>>,
@@ -410,6 +413,7 @@ impl App {
             terminals: HashMap::new(),
             modifiers: ModifiersState::empty(),
             selection: Selection::default(),
+            selection_scroll_anchor: None,
             mouse_pos: (0.0, 0.0),
             clipboard: Clipboard::new().ok(),
             last_grid: Vec::new(),
@@ -1166,6 +1170,8 @@ impl App {
     }
 
     fn render_terminals(&mut self, dt: f32) {
+        let _span = tracing::trace_span!("render_terminals").entered();
+
         // Record frame time for FPS display
         let fps = self.record_frame_time(dt);
 
@@ -1201,8 +1207,22 @@ impl App {
         let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
         let focused_pane = self.layout.focused_pane();
 
+        // Adjust selection for any lines that scrolled since it was created
+        if let Some(anchor) = self.selection_scroll_anchor {
+            if let Some(terminal) = self.terminals.get(&focused_pane) {
+                let current = terminal.total_lines_scrolled();
+                let delta = current.saturating_sub(anchor) as i32;
+                if delta > 0 {
+                    self.selection.start.row -= delta;
+                    self.selection.end.row -= delta;
+                    self.selection_scroll_anchor = Some(current);
+                }
+            }
+        }
+
         let mut pane_renders: Vec<(PaneId, f32, f32, Vec<Vec<RenderCell>>)> = Vec::new();
 
+        let _grid_span = tracing::trace_span!("read_terminal_grids").entered();
         for pane_id in self.layout.panes() {
             let Some(rect) = rects.get(pane_id) else {
                 continue;
@@ -1369,6 +1389,7 @@ impl App {
 
             pane_renders.push((*pane_id, x_offset, y_offset, cells));
         }
+        drop(_grid_span);
 
         // Calculate separators from pane boundaries
         // Format: (x, y, length, is_vertical)
@@ -2159,6 +2180,13 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                #[cfg(feature = "tracy")]
+                if let Some(c) = tracy_client::Client::running() {
+                    c.frame_mark();
+                }
+
+                let _span = tracing::trace_span!("redraw_requested").entered();
+
                 // Check for update check results
                 if let Some(ref rx) = self.update_receiver {
                     if let Ok(info) = rx.try_recv() {
@@ -2196,6 +2224,7 @@ impl ApplicationHandler for App {
                     self.render_terminals(dt);
                 } else {
                     // Sleep for remaining time to avoid busy-waiting
+                    let _sleep_span = tracing::trace_span!("frame_sleep").entered();
                     std::thread::sleep(self.frame_duration - elapsed);
                 }
 
@@ -2285,6 +2314,14 @@ impl ApplicationHandler for App {
                                         self.selection.active = true;
                                     }
                                 }
+
+                                // Record scroll counter so we can adjust
+                                // selection if new output pushes content up
+                                let focused = self.layout.focused_pane();
+                                self.selection_scroll_anchor = self
+                                    .terminals
+                                    .get(&focused)
+                                    .map(|t| t.total_lines_scrolled());
 
                                 self.last_click_time = Some(now);
                                 self.last_click_pos = Some(pos);
@@ -2829,6 +2866,15 @@ fn main() -> Result<()> {
     // TODO: Make this configurable for high-DPI displays
     std::env::set_var("WINIT_X11_SCALE_FACTOR", "1");
 
+    #[cfg(feature = "tracy")]
+    {
+        use tracing_subscriber::layer::SubscriberExt;
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(tracing_tracy::TracyLayer::default()),
+        )
+        .expect("Failed to set Tracy subscriber");
+    }
+    #[cfg(not(feature = "tracy"))]
     tracing_subscriber::fmt::init();
 
     tracing::info!("Starting cool-rust-term");

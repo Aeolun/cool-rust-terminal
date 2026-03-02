@@ -518,6 +518,8 @@ impl Renderer {
         focused_pane_index: i32,
         effects: EffectParams,
     ) -> Result<(), RenderError> {
+        let _span = tracing::trace_span!("render_panes").entered();
+
         let (width, height) = self.gpu.size;
         let (cell_w, cell_h) = self.atlas.cell_size();
         let ascent = self.atlas.ascent();
@@ -531,6 +533,7 @@ impl Renderer {
         let mut cell_backgrounds: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = Vec::new();
 
         // Render pane contents
+        let _build_span = tracing::trace_span!("build_vertex_data").entered();
         for &(x_offset, y_offset, cells) in panes {
             for (row_idx, row) in cells.iter().enumerate() {
                 let baseline_y = y_offset + (row_idx as f32 * cell_h) + ascent;
@@ -578,10 +581,15 @@ impl Renderer {
             }
         }
 
-        self.text_pipeline
-            .update_screen_size(&self.gpu.queue, width as f32, height as f32);
-        self.text_pipeline
-            .prepare(&self.gpu.queue, &mut self.atlas, &chars);
+        drop(_build_span);
+
+        {
+            let _span = tracing::trace_span!("text_pipeline_prepare").entered();
+            self.text_pipeline
+                .update_screen_size(&self.gpu.queue, width as f32, height as f32);
+            self.text_pipeline
+                .prepare(&self.gpu.queue, &mut self.atlas, &chars);
+        }
 
         // Prepare lines for rendering (cell backgrounds + separators + focus borders + debug grid)
         // Cell backgrounds are drawn first (underneath text)
@@ -698,9 +706,12 @@ impl Renderer {
             ));
         }
 
-        self.line_pipeline
-            .update_screen_size(&self.gpu.queue, width as f32, height as f32);
-        self.line_pipeline.prepare(&self.gpu.queue, &all_lines);
+        {
+            let _span = tracing::trace_span!("line_pipeline_prepare").entered();
+            self.line_pipeline
+                .update_screen_size(&self.gpu.queue, width as f32, height as f32);
+            self.line_pipeline.prepare(&self.gpu.queue, &all_lines);
+        }
 
         // Update CRT uniforms
         let (_, cell_height) = self.atlas.cell_size();
@@ -815,6 +826,8 @@ impl Renderer {
             .crt_pipeline
             .create_bind_group(&self.gpu.device, self.burnin_pipeline.output_view());
 
+        let _gpu_span = tracing::trace_span!("gpu_render").entered();
+
         let output = self.gpu.surface.get_current_texture()?;
         let screen_view = output
             .texture
@@ -829,6 +842,7 @@ impl Renderer {
 
         // Pass 1: Render text to off-screen texture
         {
+            let _span = tracing::trace_span!("text_pass").entered();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Text Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -853,6 +867,7 @@ impl Renderer {
 
         // Pass 2: Apply burn-in effect (blend current frame with decayed previous)
         {
+            let _span = tracing::trace_span!("burnin_pass").entered();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Burn-in Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -873,6 +888,7 @@ impl Renderer {
 
         // Pass 3: Apply CRT effect to screen
         {
+            let _span = tracing::trace_span!("crt_pass").entered();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("CRT Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -892,8 +908,11 @@ impl Renderer {
                 .render(&mut render_pass, &self.crt_bind_group);
         }
 
-        self.gpu.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        {
+            let _span = tracing::trace_span!("gpu_submit_present").entered();
+            self.gpu.queue.submit(std::iter::once(encoder.finish()));
+            output.present();
+        }
 
         // Swap burn-in buffers for next frame
         self.burnin_pipeline.swap();

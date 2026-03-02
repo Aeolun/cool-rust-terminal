@@ -1,0 +1,3 @@
+[submodule "vendor/alacritty"]
+	path = vendor/alacritty
+	url = https://github.com/alacritty/alacritty.git
