@@ -16,6 +16,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Get version from tag
         id: tag
@@ -51,6 +53,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Get version from tag
         id: version
@@ -116,6 +120,8 @@ jobs:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Get version from tag
         id: version
@@ -201,6 +207,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: Get version from tag
         id: version
