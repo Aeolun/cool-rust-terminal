@@ -1737,8 +1737,8 @@ impl App {
             {
                 let stats = renderer.last_stats();
                 let stats_text = format!(
-                    "glyphs: {} quads  lines: {} quads  verts: {}  idx: {}{}",
-                    stats.glyph_quads,
+                    "glyphs: {} inst  lines: {} quads  verts: {}  idx: {}{}",
+                    stats.glyph_instances,
                     stats.line_quads,
                     stats.total_vertices,
                     stats.total_indices,

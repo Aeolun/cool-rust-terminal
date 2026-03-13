@@ -66,14 +66,16 @@ pub struct EffectParams {
 /// Per-frame rendering statistics
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RenderStats {
-    /// Number of glyph quads (characters) sent to the text pipeline
+    /// Number of glyph instances (instanced quads) in the text pipeline
     pub glyph_quads: u32,
     /// Number of line quads (backgrounds, separators, scrollbars, etc.)
     pub line_quads: u32,
-    /// Total vertices across all pipelines
+    /// Total shared vertices across all pipelines (excludes instanced data)
     pub total_vertices: u32,
-    /// Total indices across all pipelines
+    /// Total shared indices across all pipelines
     pub total_indices: u32,
+    /// Number of glyph instances drawn
+    pub glyph_instances: u32,
     /// Whether the atlas texture was uploaded this frame
     pub atlas_uploaded: bool,
 }
@@ -745,16 +747,18 @@ impl Renderer {
         self.bg_buf = all_lines;
 
         // Record frame stats
-        let glyph_quads = self.text_pipeline.num_indices / 6;
+        // Text pipeline: 1 shared quad (4 verts, 6 indices) + N instances
+        let glyph_instances = self.text_pipeline.num_instances;
+        // Line pipeline: N quads × 4 verts, 6 indices each
         let line_quads = self.line_pipeline.num_indices / 6;
-        let total_indices = self.text_pipeline.num_indices + self.line_pipeline.num_indices;
-        let total_vertices =
-            (self.text_pipeline.num_indices / 6 * 4) + (self.line_pipeline.num_indices / 6 * 4);
+        let total_vertices = 4 + (line_quads * 4); // 4 shared quad verts + line verts
+        let total_indices = 6 + self.line_pipeline.num_indices; // 6 shared quad indices + line indices
         self.last_stats = RenderStats {
-            glyph_quads,
+            glyph_quads: glyph_instances,
             line_quads,
             total_vertices,
             total_indices,
+            glyph_instances,
             atlas_uploaded: atlas_was_dirty,
         };
 

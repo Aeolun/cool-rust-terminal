@@ -6,25 +6,56 @@ use wgpu::util::DeviceExt;
 
 use crate::atlas::GlyphAtlas;
 
+/// Unit quad vertex — just a corner position (0,0), (1,0), (1,1), (0,1)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
-pub struct Vertex {
-    pub position: [f32; 2],
-    pub tex_coords: [f32; 2],
+struct QuadVertex {
+    position: [f32; 2],
+}
+
+impl QuadVertex {
+    const ATTRIBS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![
+        0 => Float32x2,
+    ];
+
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<QuadVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &Self::ATTRIBS,
+        }
+    }
+}
+
+/// Per-glyph instance data
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct GlyphInstance {
+    /// Screen-space top-left position (pixels)
+    pub glyph_pos: [f32; 2],
+    /// Pixel width/height of the glyph
+    pub glyph_size: [f32; 2],
+    /// Atlas UV top-left
+    pub uv_pos: [f32; 2],
+    /// Atlas UV width/height
+    pub uv_size: [f32; 2],
+    /// RGBA color
     pub color: [f32; 4],
 }
 
-impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
-        0 => Float32x2,
-        1 => Float32x2,
-        2 => Float32x4,
+impl GlyphInstance {
+    const ATTRIBS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        1 => Float32x2,  // glyph_pos
+        2 => Float32x2,  // glyph_size
+        3 => Float32x2,  // uv_pos
+        4 => Float32x2,  // uv_size
+        5 => Float32x4,  // color
     ];
 
-    pub fn desc() -> wgpu::VertexBufferLayout<'static> {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
+            array_stride: std::mem::size_of::<GlyphInstance>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &Self::ATTRIBS,
         }
     }
@@ -41,17 +72,16 @@ pub struct TextPipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
+    quad_vertex_buffer: wgpu::Buffer,
+    quad_index_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
     atlas_texture: wgpu::Texture,
     atlas_width: u32,
     atlas_height: u32,
-    max_chars: usize,
-    pub(crate) num_indices: u32,
-    /// Reusable vertex buffer (avoids per-frame allocation)
-    vertex_scratch: Vec<Vertex>,
-    /// Reusable index buffer (avoids per-frame allocation)
-    index_scratch: Vec<u32>,
+    max_instances: usize,
+    pub(crate) num_instances: u32,
+    /// Reusable instance buffer (avoids per-frame allocation)
+    instance_scratch: Vec<GlyphInstance>,
 }
 
 impl TextPipeline {
@@ -186,7 +216,7 @@ impl TextPipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Vertex::desc()],
+                buffers: &[QuadVertex::desc(), GlyphInstance::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -214,19 +244,41 @@ impl TextPipeline {
             cache: None,
         });
 
-        // Pre-allocate buffers for up to 10000 characters
-        let max_chars = 50000; // Support large terminals with many characters
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Text Vertex Buffer"),
-            size: (max_chars * 4 * std::mem::size_of::<Vertex>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        // Shared unit quad — 4 vertices, 6 indices, used for all glyph instances
+        let quad_vertices = [
+            QuadVertex {
+                position: [0.0, 0.0],
+            },
+            QuadVertex {
+                position: [1.0, 0.0],
+            },
+            QuadVertex {
+                position: [1.0, 1.0],
+            },
+            QuadVertex {
+                position: [0.0, 1.0],
+            },
+        ];
+        let quad_indices: [u32; 6] = [0, 1, 2, 0, 2, 3];
+
+        let quad_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Quad Vertex Buffer"),
+            contents: bytemuck::cast_slice(&quad_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Text Index Buffer"),
-            size: (max_chars * 6 * std::mem::size_of::<u32>()) as u64,
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+        let quad_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Quad Index Buffer"),
+            contents: bytemuck::cast_slice(&quad_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        // Pre-allocate instance buffer for up to max_instances glyphs
+        let max_instances = 50000;
+        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Glyph Instance Buffer"),
+            size: (max_instances * std::mem::size_of::<GlyphInstance>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -234,15 +286,15 @@ impl TextPipeline {
             pipeline,
             bind_group,
             uniform_buffer,
-            vertex_buffer,
-            index_buffer,
+            quad_vertex_buffer,
+            quad_index_buffer,
+            instance_buffer,
             atlas_texture,
             atlas_width,
             atlas_height,
-            max_chars,
-            num_indices: 0,
-            vertex_scratch: Vec::new(),
-            index_scratch: Vec::new(),
+            max_instances,
+            num_instances: 0,
+            instance_scratch: Vec::new(),
         }
     }
 
@@ -288,11 +340,9 @@ impl TextPipeline {
             atlas.clear_dirty();
         }
 
-        let _span = tracing::trace_span!("build_glyph_vertices").entered();
-        self.vertex_scratch.clear();
-        self.index_scratch.clear();
-        let vertices = &mut self.vertex_scratch;
-        let indices = &mut self.index_scratch;
+        let _span = tracing::trace_span!("build_glyph_instances").entered();
+        self.instance_scratch.clear();
+        let instances = &mut self.instance_scratch;
 
         for (i, &(c, x, baseline_y, color, is_wide)) in chars.iter().enumerate() {
             let glyph = match atlas.get_glyph(c, is_wide) {
@@ -309,66 +359,37 @@ impl TextPipeline {
             // In screen coords (Y down), glyph top is at baseline_y - (height + ymin)
             let x0 = x + glyph.offset_x;
             let y0 = baseline_y - glyph.height as f32 - glyph.offset_y;
-            let x1 = x0 + glyph.width as f32;
-            let y1 = y0 + glyph.height as f32;
 
-            let u0 = glyph.uv_x;
-            let v0 = glyph.uv_y;
-            let u1 = glyph.uv_x + glyph.uv_width;
-            let v1 = glyph.uv_y + glyph.uv_height;
-
-            let base = (vertices.len() / 4) as u32 * 4;
-
-            vertices.push(Vertex {
-                position: [x0, y0],
-                tex_coords: [u0, v0],
-                color,
-            });
-            vertices.push(Vertex {
-                position: [x1, y0],
-                tex_coords: [u1, v0],
-                color,
-            });
-            vertices.push(Vertex {
-                position: [x1, y1],
-                tex_coords: [u1, v1],
-                color,
-            });
-            vertices.push(Vertex {
-                position: [x0, y1],
-                tex_coords: [u0, v1],
+            instances.push(GlyphInstance {
+                glyph_pos: [x0, y0],
+                glyph_size: [glyph.width as f32, glyph.height as f32],
+                uv_pos: [glyph.uv_x, glyph.uv_y],
+                uv_size: [glyph.uv_width, glyph.uv_height],
                 color,
             });
 
-            indices.push(base);
-            indices.push(base + 1);
-            indices.push(base + 2);
-            indices.push(base);
-            indices.push(base + 2);
-            indices.push(base + 3);
-
-            if i >= self.max_chars - 1 {
+            if i >= self.max_instances - 1 {
                 break;
             }
         }
 
-        if !vertices.is_empty() {
-            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
-            queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(indices));
+        if !instances.is_empty() {
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
         }
 
-        self.num_indices = indices.len() as u32;
+        self.num_instances = instances.len() as u32;
     }
 
     pub fn render<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>) {
-        if self.num_indices == 0 {
+        if self.num_instances == 0 {
             return;
         }
 
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        render_pass.set_vertex_buffer(0, self.quad_vertex_buffer.slice(..));
+        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+        render_pass.set_index_buffer(self.quad_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..6, 0, 0..self.num_instances);
     }
 }
