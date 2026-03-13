@@ -40,7 +40,11 @@ pub struct LinePipeline {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     max_lines: usize,
-    num_indices: u32,
+    pub(crate) num_indices: u32,
+    /// Reusable vertex buffer (avoids per-frame allocation)
+    vertex_scratch: Vec<LineVertex>,
+    /// Reusable index buffer (avoids per-frame allocation)
+    index_scratch: Vec<u32>,
 }
 
 impl LinePipeline {
@@ -146,6 +150,8 @@ impl LinePipeline {
             index_buffer,
             max_lines,
             num_indices: 0,
+            vertex_scratch: Vec::new(),
+            index_scratch: Vec::new(),
         }
     }
 
@@ -164,8 +170,10 @@ impl LinePipeline {
     /// Each line is (x0, y0, x1, y1, thickness, color)
     #[allow(clippy::type_complexity)]
     pub fn prepare(&mut self, queue: &wgpu::Queue, lines: &[(f32, f32, f32, f32, f32, [f32; 4])]) {
-        let mut vertices = Vec::with_capacity(lines.len() * 4);
-        let mut indices = Vec::with_capacity(lines.len() * 6);
+        self.vertex_scratch.clear();
+        self.index_scratch.clear();
+        let vertices = &mut self.vertex_scratch;
+        let indices = &mut self.index_scratch;
 
         for (i, &(x0, y0, x1, y1, thickness, color)) in lines.iter().enumerate() {
             if i >= self.max_lines {
@@ -214,8 +222,8 @@ impl LinePipeline {
         }
 
         if !vertices.is_empty() {
-            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-            queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
+            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+            queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(indices));
         }
 
         self.num_indices = indices.len() as u32;

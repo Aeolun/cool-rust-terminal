@@ -438,13 +438,15 @@ struct App {
     selection_scroll_anchor: Option<u64>,
     mouse_pos: (f64, f64),
     clipboard: Option<Clipboard>,
-    last_grid: Vec<Vec<char>>,
     last_resize: Option<Instant>,
     last_scroll: HashMap<PaneId, Instant>,
     last_frame: Instant,
     frame_duration: Duration,
     fps_samples: [f32; 60],
     fps_sample_idx: usize,
+    /// Rolling buffer of render work times in seconds (excludes vsync/sleep)
+    render_time_samples: [f32; 100],
+    render_time_idx: usize,
     app_start: Instant,
     config: Config,
     config_ui: ConfigUI,
@@ -511,13 +513,14 @@ impl App {
             selection_scroll_anchor: None,
             mouse_pos: (0.0, 0.0),
             clipboard: Clipboard::new().ok(),
-            last_grid: Vec::new(),
             last_resize: None,
             last_scroll: HashMap::new(),
             last_frame: Instant::now(),
             frame_duration: Duration::from_nanos(1_000_000_000 / (DEFAULT_FPS * 2) as u64),
             fps_samples: [0.0; 60],
             fps_sample_idx: 0,
+            render_time_samples: [0.0; 100],
+            render_time_idx: 0,
             app_start: Instant::now(),
             config_ui: ConfigUI::new(config.clone()),
             search_ui: SearchUI::new(),
@@ -1572,14 +1575,6 @@ impl App {
                 rows
             });
 
-            // Update last_grid for copy operations on the focused pane
-            if is_focused {
-                self.last_grid = cells
-                    .iter()
-                    .map(|row| row.iter().map(|cell| cell.c).collect())
-                    .collect();
-            }
-
             pane_renders.push((*pane_id, x_offset, y_offset, cells));
         }
         drop(_grid_span);
@@ -1716,7 +1711,7 @@ impl App {
             Vec::new()
         };
 
-        // Add FPS counter in bottom-left when debug grid is enabled
+        // Add FPS counter and render timing in bottom-left when debug grid is enabled
         if self.debug_grid {
             let fps_text = format!("{:.0} FPS", fps);
             let text_width = fps_text.len() as f32 * cell_w;
@@ -1724,6 +1719,40 @@ impl App {
             let x = text_width / 2.0 + cell_w;
             let y = win_height as f32 - cell_h * 1.5;
             size_indicators.push((x, y, fps_text));
+
+            // Render work time stats (avg / max of last 100 frames)
+            let samples = &self.render_time_samples;
+            let valid: Vec<f32> = samples.iter().copied().filter(|&t| t > 0.0).collect();
+            if !valid.is_empty() {
+                let avg_ms = valid.iter().sum::<f32>() / valid.len() as f32 * 1000.0;
+                let max_ms = valid.iter().cloned().fold(0.0f32, f32::max) * 1000.0;
+                let timing_text = format!("render: {:.1}ms avg / {:.1}ms max", avg_ms, max_ms);
+                let timing_width = timing_text.len() as f32 * cell_w;
+                let tx = timing_width / 2.0 + cell_w;
+                let ty = win_height as f32 - cell_h * 3.0;
+                size_indicators.push((tx, ty, timing_text));
+            }
+
+            // GPU stats from last frame
+            {
+                let stats = renderer.last_stats();
+                let stats_text = format!(
+                    "glyphs: {} quads  lines: {} quads  verts: {}  idx: {}{}",
+                    stats.glyph_quads,
+                    stats.line_quads,
+                    stats.total_vertices,
+                    stats.total_indices,
+                    if stats.atlas_uploaded {
+                        "  [atlas upload]"
+                    } else {
+                        ""
+                    },
+                );
+                let sw = stats_text.len() as f32 * cell_w;
+                let sx = sw / 2.0 + cell_w;
+                let sy = win_height as f32 - cell_h * 4.5;
+                size_indicators.push((sx, sy, stats_text));
+            }
         }
 
         // Add startup hint after power-on animation
@@ -2573,7 +2602,12 @@ impl ApplicationHandler for App {
                 if elapsed >= self.frame_duration {
                     let dt = elapsed.as_secs_f32();
                     self.last_frame = now;
+                    let render_start = Instant::now();
                     self.render_terminals(dt);
+                    let render_time = render_start.elapsed().as_secs_f32();
+                    self.render_time_samples[self.render_time_idx] = render_time;
+                    self.render_time_idx =
+                        (self.render_time_idx + 1) % self.render_time_samples.len();
                 } else {
                     // Sleep for remaining time to avoid busy-waiting
                     let _sleep_span = tracing::trace_span!("frame_sleep").entered();

@@ -47,7 +47,11 @@ pub struct TextPipeline {
     atlas_width: u32,
     atlas_height: u32,
     max_chars: usize,
-    num_indices: u32,
+    pub(crate) num_indices: u32,
+    /// Reusable vertex buffer (avoids per-frame allocation)
+    vertex_scratch: Vec<Vertex>,
+    /// Reusable index buffer (avoids per-frame allocation)
+    index_scratch: Vec<u32>,
 }
 
 impl TextPipeline {
@@ -237,6 +241,8 @@ impl TextPipeline {
             atlas_height,
             max_chars,
             num_indices: 0,
+            vertex_scratch: Vec::new(),
+            index_scratch: Vec::new(),
         }
     }
 
@@ -257,32 +263,36 @@ impl TextPipeline {
         atlas: &mut GlyphAtlas,
         chars: &[(char, f32, f32, [f32; 4], bool)], // char, x, baseline_y, color, is_wide
     ) {
-        // Update atlas texture with latest glyph data (new glyphs may have been added)
-        let _span = tracing::trace_span!("atlas_upload").entered();
-        queue.write_texture(
-            wgpu::ImageCopyTexture {
-                texture: &self.atlas_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            atlas.atlas_data(),
-            wgpu::ImageDataLayout {
-                offset: 0,
-                bytes_per_row: Some(self.atlas_width),
-                rows_per_image: Some(self.atlas_height),
-            },
-            wgpu::Extent3d {
-                width: self.atlas_width,
-                height: self.atlas_height,
-                depth_or_array_layers: 1,
-            },
-        );
-        drop(_span);
+        // Only upload atlas texture when new glyphs have been rasterized
+        if atlas.is_dirty() {
+            let _span = tracing::trace_span!("atlas_upload").entered();
+            queue.write_texture(
+                wgpu::ImageCopyTexture {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                atlas.atlas_data(),
+                wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.atlas_width),
+                    rows_per_image: Some(self.atlas_height),
+                },
+                wgpu::Extent3d {
+                    width: self.atlas_width,
+                    height: self.atlas_height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            atlas.clear_dirty();
+        }
 
         let _span = tracing::trace_span!("build_glyph_vertices").entered();
-        let mut vertices = Vec::with_capacity(chars.len() * 4);
-        let mut indices = Vec::with_capacity(chars.len() * 6);
+        self.vertex_scratch.clear();
+        self.index_scratch.clear();
+        let vertices = &mut self.vertex_scratch;
+        let indices = &mut self.index_scratch;
 
         for (i, &(c, x, baseline_y, color, is_wide)) in chars.iter().enumerate() {
             let glyph = match atlas.get_glyph(c, is_wide) {
@@ -343,8 +353,8 @@ impl TextPipeline {
         }
 
         if !vertices.is_empty() {
-            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-            queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
+            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+            queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(indices));
         }
 
         self.num_indices = indices.len() as u32;

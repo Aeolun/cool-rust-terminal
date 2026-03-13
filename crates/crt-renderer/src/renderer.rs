@@ -63,6 +63,21 @@ pub struct EffectParams {
     pub beam_step_count: u32,    // Advance N frames when paused (0 = no step)
 }
 
+/// Per-frame rendering statistics
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RenderStats {
+    /// Number of glyph quads (characters) sent to the text pipeline
+    pub glyph_quads: u32,
+    /// Number of line quads (backgrounds, separators, scrollbars, etc.)
+    pub line_quads: u32,
+    /// Total vertices across all pipelines
+    pub total_vertices: u32,
+    /// Total indices across all pipelines
+    pub total_indices: u32,
+    /// Whether the atlas texture was uploaded this frame
+    pub atlas_uploaded: bool,
+}
+
 pub struct Renderer {
     gpu: GpuState,
     clear_color: wgpu::Color,
@@ -80,6 +95,12 @@ pub struct Renderer {
     crt_bind_group: wgpu::BindGroup,
     last_frame: Instant,
     frame_count: u64, // For beam sweep / interlacing timing
+    /// Reusable buffer for character data (avoids per-frame allocation)
+    char_buf: Vec<(char, f32, f32, [f32; 4], bool)>,
+    /// Reusable buffer for cell background quads (avoids per-frame allocation)
+    bg_buf: Vec<(f32, f32, f32, f32, f32, [f32; 4])>,
+    /// Last frame's rendering statistics
+    last_stats: RenderStats,
 }
 
 impl Renderer {
@@ -170,6 +191,9 @@ impl Renderer {
             crt_bind_group,
             last_frame: Instant::now(),
             frame_count: 0,
+            char_buf: Vec::new(),
+            bg_buf: Vec::new(),
+            last_stats: RenderStats::default(),
         })
     }
 
@@ -344,6 +368,11 @@ impl Renderer {
 
     pub fn cell_size(&self) -> (f32, f32) {
         self.atlas.cell_size()
+    }
+
+    /// Get rendering statistics from the last frame
+    pub fn last_stats(&self) -> RenderStats {
+        self.last_stats
     }
 
     /// Reset CRT time to replay the power-on animation
@@ -529,8 +558,8 @@ impl Renderer {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        let mut chars: Vec<(char, f32, f32, [f32; 4], bool)> = Vec::new();
-        let mut cell_backgrounds: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = Vec::new();
+        self.char_buf.clear();
+        self.bg_buf.clear();
 
         // Render pane contents
         let _build_span = tracing::trace_span!("build_vertex_data").entered();
@@ -548,21 +577,16 @@ impl Renderer {
                     if cell.bg[3] > 0.01 {
                         // Draw as horizontal line with thickness = cell_h
                         let y_center = cell_y + cell_h / 2.0;
-                        cell_backgrounds.push((
-                            x,
-                            y_center,
-                            x + bg_width,
-                            y_center,
-                            cell_h,
-                            cell.bg,
-                        ));
+                        self.bg_buf
+                            .push((x, y_center, x + bg_width, y_center, cell_h, cell.bg));
                     }
 
                     if cell.c == ' ' || cell.c == '\0' {
                         continue;
                     }
 
-                    chars.push((cell.c, x, baseline_y, cell.fg, cell.is_wide));
+                    self.char_buf
+                        .push((cell.c, x, baseline_y, cell.fg, cell.is_wide));
                 }
             }
         }
@@ -577,24 +601,28 @@ impl Renderer {
             let y = center_y + ascent / 2.0;
 
             for (i, c) in text.chars().enumerate() {
-                chars.push((c, start_x + i as f32 * cell_w, y, size_color, false));
+                self.char_buf
+                    .push((c, start_x + i as f32 * cell_w, y, size_color, false));
             }
         }
 
         drop(_build_span);
 
+        let atlas_was_dirty = self.atlas.is_dirty();
         {
             let _span = tracing::trace_span!("text_pipeline_prepare").entered();
             self.text_pipeline
                 .update_screen_size(&self.gpu.queue, width as f32, height as f32);
             self.text_pipeline
-                .prepare(&self.gpu.queue, &mut self.atlas, &chars);
+                .prepare(&self.gpu.queue, &mut self.atlas, &self.char_buf);
         }
 
         // Prepare lines for rendering (cell backgrounds + separators + focus borders + debug grid)
         // Cell backgrounds are drawn first (underneath text)
         // In per-pane CRT mode, skip separator/focus lines (use shader glow instead)
-        let mut all_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> = cell_backgrounds;
+        // Take bg_buf to use as the starting point for all_lines (avoids reallocation)
+        // Will be returned to self.bg_buf after prepare() to preserve allocation for next frame
+        let mut all_lines = std::mem::take(&mut self.bg_buf);
 
         if !per_pane_crt {
             // Draw separators as lines - use glow color with transparency
@@ -712,6 +740,23 @@ impl Renderer {
                 .update_screen_size(&self.gpu.queue, width as f32, height as f32);
             self.line_pipeline.prepare(&self.gpu.queue, &all_lines);
         }
+        // Return the allocation to bg_buf for reuse next frame
+        all_lines.clear();
+        self.bg_buf = all_lines;
+
+        // Record frame stats
+        let glyph_quads = self.text_pipeline.num_indices / 6;
+        let line_quads = self.line_pipeline.num_indices / 6;
+        let total_indices = self.text_pipeline.num_indices + self.line_pipeline.num_indices;
+        let total_vertices =
+            (self.text_pipeline.num_indices / 6 * 4) + (self.line_pipeline.num_indices / 6 * 4);
+        self.last_stats = RenderStats {
+            glyph_quads,
+            line_quads,
+            total_vertices,
+            total_indices,
+            atlas_uploaded: atlas_was_dirty,
+        };
 
         // Update CRT uniforms
         let (_, cell_height) = self.atlas.cell_size();

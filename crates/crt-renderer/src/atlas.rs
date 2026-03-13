@@ -34,6 +34,8 @@ pub struct GlyphAtlas {
     next_x: u32,
     next_y: u32,
     row_height: u32,
+    /// Whether the atlas texture data has changed since the last GPU upload
+    dirty: bool,
 }
 
 /// BDF font used as fallback, with its native cell dimensions for scaling
@@ -109,6 +111,7 @@ impl GlyphAtlas {
             next_x: 0,
             next_y: 0,
             row_height: 0,
+            dirty: true,
         })
     }
 
@@ -157,6 +160,7 @@ impl GlyphAtlas {
             next_x: 0,
             next_y: 0,
             row_height: 0,
+            dirty: true,
         })
     }
 
@@ -605,6 +609,7 @@ impl GlyphAtlas {
                 self.atlas_data[dst_idx] = bitmap[src_idx];
             }
         }
+        self.dirty = true;
 
         let info = GlyphInfo {
             uv_x: self.next_x as f32 / self.atlas_width as f32,
@@ -670,6 +675,16 @@ impl GlyphAtlas {
 
     pub fn atlas_data(&self) -> &[u8] {
         &self.atlas_data
+    }
+
+    /// Whether the atlas texture has changed since the last `clear_dirty()` call.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Mark the atlas as uploaded — clears the dirty flag.
+    pub fn clear_dirty(&mut self) {
+        self.dirty = false;
     }
 
     pub fn atlas_dimensions(&self) -> (u32, u32) {

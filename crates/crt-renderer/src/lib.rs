@@ -14,4 +14,4 @@ mod text_pipeline;
 pub use atlas::GlyphAtlas;
 pub use bdf::BdfFont;
 pub use fonts::{get_bdf_font_data, get_font_data};
-pub use renderer::{EffectParams, RenderCell, Renderer};
+pub use renderer::{EffectParams, RenderCell, RenderStats, Renderer};
