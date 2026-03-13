@@ -5,6 +5,8 @@ pub mod process_info;
 pub mod scrollback;
 pub mod terminal;
 
+pub use alacritty_terminal::index::{Column, Line, Point};
+pub use alacritty_terminal::term::search::RegexSearch;
 pub use alacritty_terminal::term::TermMode;
 pub use process_info::get_process_cwd;
 pub use scrollback::ScrollbackData;

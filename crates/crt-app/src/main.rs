@@ -2,6 +2,7 @@
 // ABOUTME: Sets up window, event loop, and coordinates terminal/rendering.
 
 mod config_ui;
+mod search_ui;
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
@@ -23,6 +24,7 @@ use crt_core::{BdfFont, ColorScheme, Config, Font, ScanlineMode, SessionData, Up
 use crt_layout::{Direction, LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::{TermMode, Terminal};
+use search_ui::{SearchAction, SearchUI};
 
 /// Convert an ANSI color from alacritty_terminal to our [f32; 4] format
 fn ansi_color_to_rgba(color: AnsiColor, scheme: &ColorScheme, is_dim: bool) -> [f32; 4] {
@@ -313,6 +315,8 @@ impl Selection {
 const RESIZE_INDICATOR_DURATION: Duration = Duration::from_millis(1000);
 const SCROLLBAR_FADE_DURATION: Duration = Duration::from_millis(1500);
 const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
+const SCROLLBAR_HOVER_PROXIMITY: f64 = 20.0; // Show scrollbar when mouse within this many px of edge
+const SCROLLBAR_WIDTH: f32 = 4.0;
 const DEFAULT_FPS: u32 = 60; // Fallback if we can't detect refresh rate
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 const HIGH_DPI_SCALE_THRESHOLD: f64 = 1.5;
@@ -342,6 +346,86 @@ impl ActiveFontSettings {
     }
 }
 
+/// Computed scrollbar geometry for a single pane, used for both rendering and hit testing.
+#[derive(Clone, Copy)]
+struct ScrollbarGeometry {
+    pane_id: PaneId,
+    /// Left edge of the scrollbar in pixels
+    x: f32,
+    /// Top of the scrollbar track in pixels
+    y: f32,
+    /// Total track height in pixels
+    track_height: f32,
+    /// Thumb offset from track top in pixels
+    thumb_start: f32,
+    /// Thumb height in pixels
+    thumb_height: f32,
+    /// Current opacity (0.0-1.0)
+    opacity: f32,
+    /// History size at time of computation (for scroll ratio)
+    history_size: usize,
+}
+
+impl ScrollbarGeometry {
+    /// Convert to the tuple format expected by the renderer
+    fn to_render_tuple(self) -> (f32, f32, f32, f32, f32, f32) {
+        (
+            self.x,
+            self.y,
+            self.track_height,
+            self.thumb_start,
+            self.thumb_height,
+            self.opacity,
+        )
+    }
+
+    /// Check if a pixel position (in content-space, post barrel distortion) hits this scrollbar.
+    /// Uses a wider hit area than the visual width for easier clicking.
+    fn hit_test(&self, px: f64, py: f64) -> bool {
+        let hit_margin = 8.0; // Extra pixels on each side for easier clicking
+        let left = self.x as f64 - hit_margin;
+        let right = self.x as f64 + SCROLLBAR_WIDTH as f64 + hit_margin;
+        let top = self.y as f64;
+        let bottom = self.y as f64 + self.track_height as f64;
+        px >= left && px <= right && py >= top && py <= bottom
+    }
+
+    /// Check if a pixel position hits the thumb specifically
+    fn thumb_hit_test(&self, px: f64, py: f64) -> bool {
+        let hit_margin = 8.0;
+        let left = self.x as f64 - hit_margin;
+        let right = self.x as f64 + SCROLLBAR_WIDTH as f64 + hit_margin;
+        let top = (self.y + self.thumb_start) as f64;
+        let bottom = (self.y + self.thumb_start + self.thumb_height) as f64;
+        px >= left && px <= right && py >= top && py <= bottom
+    }
+
+    /// Convert a Y pixel position on the track to a scroll offset
+    fn y_to_offset(&self, py: f64) -> usize {
+        let track_y = py - self.y as f64;
+        let scroll_range = self.track_height - self.thumb_height;
+        if scroll_range <= 0.0 {
+            return 0;
+        }
+        // Center the thumb on the click position
+        let centered = track_y - self.thumb_height as f64 / 2.0;
+        let fraction = (centered / scroll_range as f64).clamp(0.0, 1.0);
+        // fraction 0 = top = max offset, fraction 1 = bottom = offset 0
+        ((1.0 - fraction) * self.history_size as f64).round() as usize
+    }
+}
+
+/// State for an active scrollbar drag operation
+struct ScrollbarDrag {
+    pane_id: PaneId,
+    /// Y pixel position where the drag started
+    start_y: f64,
+    /// Display offset when drag started
+    start_offset: usize,
+    /// Scrollbar geometry snapshot at drag start
+    geo: ScrollbarGeometry,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -364,6 +448,7 @@ struct App {
     app_start: Instant,
     config: Config,
     config_ui: ConfigUI,
+    search_ui: SearchUI,
     debug_grid: bool,
     beam_paused: bool,
     beam_step_held: bool,    // Is step key currently held
@@ -384,6 +469,12 @@ struct App {
     paste_dialog: Option<PasteDialog>,
     /// Accumulator for pixel-based scroll deltas (touchpad)
     scroll_accumulator: f64,
+    /// Active scrollbar drag state
+    scrollbar_drag: Option<ScrollbarDrag>,
+    /// Cached scrollbar geometries from last render (for hit testing)
+    scrollbar_geometries: Vec<ScrollbarGeometry>,
+    /// Whether the mouse is hovering near any scrollbar edge
+    scrollbar_hover_pane: Option<PaneId>,
     /// Receiver for update check results from background thread
     update_receiver: Option<Receiver<UpdateInfo>>,
     /// Cached update info after check completes
@@ -429,6 +520,7 @@ impl App {
             fps_sample_idx: 0,
             app_start: Instant::now(),
             config_ui: ConfigUI::new(config.clone()),
+            search_ui: SearchUI::new(),
             config,
             debug_grid: false,
             beam_paused: false,
@@ -444,6 +536,9 @@ impl App {
             paste_dialog: None,
             click_count: 0,
             scroll_accumulator: 0.0,
+            scrollbar_drag: None,
+            scrollbar_geometries: Vec::new(),
+            scrollbar_hover_pane: None,
             update_receiver: None,
             update_info: None,
             last_font_settings: None,
@@ -840,7 +935,6 @@ impl App {
             return None;
         };
 
-        let curvature = self.current_config().effects.screen_curvature as f64;
         let per_pane_crt = self.current_config().per_pane_crt;
         let (win_width, win_height) = renderer.window_size();
         let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
@@ -851,67 +945,9 @@ impl App {
         // Pane bounds in pixels (with padding)
         let pane_x = (rect.x * win_width as f32 + PANE_PADDING) as f64;
         let pane_y = (rect.y * win_height as f32 + PANE_PADDING) as f64;
-        let pane_w = (rect.width * win_width as f32 - PANE_PADDING * 2.0) as f64;
-        let pane_h = (rect.height * win_height as f32 - PANE_PADDING * 2.0) as f64;
 
-        let (content_x, content_y) = if curvature.abs() < 0.0001 {
-            // No distortion
-            (x, y)
-        } else if per_pane_crt {
-            // Per-pane mode: apply distortion in local pane space
-            // Convert to local pane UV (0-1)
-            let local_uv_x = (x - pane_x) / pane_w;
-            let local_uv_y = (y - pane_y) / pane_h;
-
-            // Convert to centered coords (-1 to 1)
-            let centered_x = local_uv_x * 2.0 - 1.0;
-            let centered_y = local_uv_y * 2.0 - 1.0;
-
-            // Apply barrel distortion
-            let r2 = centered_x * centered_x + centered_y * centered_y;
-            let scale = 1.0 + curvature * r2;
-            let distorted_x = centered_x * scale;
-            let distorted_y = centered_y * scale;
-
-            // Convert back to local UV
-            let content_local_x = distorted_x * 0.5 + 0.5;
-            let content_local_y = distorted_y * 0.5 + 0.5;
-
-            // Check if in void
-            if !(0.0..=1.0).contains(&content_local_x) || !(0.0..=1.0).contains(&content_local_y) {
-                return None;
-            }
-
-            // Convert back to global pixel coords
-            (
-                pane_x + content_local_x * pane_w,
-                pane_y + content_local_y * pane_h,
-            )
-        } else {
-            // Whole-screen mode: apply distortion globally
-            let uv_x = x / win_width as f64;
-            let uv_y = y / win_height as f64;
-
-            let centered_x = uv_x * 2.0 - 1.0;
-            let centered_y = uv_y * 2.0 - 1.0;
-
-            let r2 = centered_x * centered_x + centered_y * centered_y;
-            let scale = 1.0 + curvature * r2;
-            let distorted_x = centered_x * scale;
-            let distorted_y = centered_y * scale;
-
-            let content_uv_x = distorted_x * 0.5 + 0.5;
-            let content_uv_y = distorted_y * 0.5 + 0.5;
-
-            if !(0.0..=1.0).contains(&content_uv_x) || !(0.0..=1.0).contains(&content_uv_y) {
-                return None;
-            }
-
-            (
-                content_uv_x * win_width as f64,
-                content_uv_y * win_height as f64,
-            )
-        };
+        let pane_rect_ref = if per_pane_crt { Some(rect) } else { None };
+        let (content_x, content_y) = self.screen_to_content(x, y, pane_rect_ref)?;
 
         let (cell_w, cell_h) = renderer.cell_size();
         let local_x = content_x - pane_x;
@@ -937,6 +973,73 @@ impl App {
 
     fn pixel_to_cell(&self, x: f64, y: f64) -> Option<CellPos> {
         self.pixel_to_cell_debug(x, y).map(|(pos, _, _, _)| pos)
+    }
+
+    /// Map screen-space pixel coordinates to content-space (pre-barrel-distortion).
+    /// In global CRT mode, the distortion is window-relative.
+    /// In per-pane CRT mode, pass the pane's normalized rect for pane-local distortion.
+    /// Returns None if the point is in the void (outside CRT content area).
+    fn screen_to_content(
+        &self,
+        x: f64,
+        y: f64,
+        pane_rect: Option<&crt_layout::Rect>,
+    ) -> Option<(f64, f64)> {
+        let renderer = self.renderer.as_ref()?;
+        let curvature = self.current_config().effects.screen_curvature as f64;
+        let (win_width, win_height) = renderer.window_size();
+
+        if curvature.abs() < 0.0001 {
+            return Some((x, y));
+        }
+
+        match pane_rect {
+            Some(rect) => {
+                // Per-pane mode: distortion in local pane space
+                let pane_x = (rect.x * win_width as f32 + PANE_PADDING) as f64;
+                let pane_y = (rect.y * win_height as f32 + PANE_PADDING) as f64;
+                let pane_w = (rect.width * win_width as f32 - PANE_PADDING * 2.0) as f64;
+                let pane_h = (rect.height * win_height as f32 - PANE_PADDING * 2.0) as f64;
+
+                let local_uv_x = (x - pane_x) / pane_w;
+                let local_uv_y = (y - pane_y) / pane_h;
+                let centered_x = local_uv_x * 2.0 - 1.0;
+                let centered_y = local_uv_y * 2.0 - 1.0;
+                let r2 = centered_x * centered_x + centered_y * centered_y;
+                let scale = 1.0 + curvature * r2;
+                let content_local_x = (centered_x * scale) * 0.5 + 0.5;
+                let content_local_y = (centered_y * scale) * 0.5 + 0.5;
+
+                if !(0.0..=1.0).contains(&content_local_x)
+                    || !(0.0..=1.0).contains(&content_local_y)
+                {
+                    return None;
+                }
+                Some((
+                    pane_x + content_local_x * pane_w,
+                    pane_y + content_local_y * pane_h,
+                ))
+            }
+            None => {
+                // Global mode: distortion in window space
+                let uv_x = x / win_width as f64;
+                let uv_y = y / win_height as f64;
+                let centered_x = uv_x * 2.0 - 1.0;
+                let centered_y = uv_y * 2.0 - 1.0;
+                let r2 = centered_x * centered_x + centered_y * centered_y;
+                let scale = 1.0 + curvature * r2;
+                let content_uv_x = (centered_x * scale) * 0.5 + 0.5;
+                let content_uv_y = (centered_y * scale) * 0.5 + 0.5;
+
+                if !(0.0..=1.0).contains(&content_uv_x) || !(0.0..=1.0).contains(&content_uv_y) {
+                    return None;
+                }
+                Some((
+                    content_uv_x * win_width as f64,
+                    content_uv_y * win_height as f64,
+                ))
+            }
+        }
     }
 
     fn pixel_to_normalized(&self, x: f64, y: f64) -> (f32, f32) {
@@ -1009,6 +1112,72 @@ impl App {
                 tracing::info!("Copied {} chars to clipboard", trimmed.len());
             }
         }
+    }
+
+    /// Check if the mouse is within proximity of any pane's scrollbar edge.
+    /// Returns the PaneId if hovering near a scrollbar area.
+    /// Coordinates are undistorted to account for barrel distortion.
+    fn check_scrollbar_hover(&self, mouse_x: f64, mouse_y: f64) -> Option<PaneId> {
+        let renderer = self.renderer.as_ref()?;
+        let (win_width, win_height) = renderer.window_size();
+        let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
+        let per_pane_crt = self.current_config().per_pane_crt;
+
+        for pane_id in self.layout.panes() {
+            let Some(rect) = rects.get(pane_id) else {
+                continue;
+            };
+            let Some(terminal) = self.terminals.get(pane_id) else {
+                continue;
+            };
+            if terminal.history_size() == 0 {
+                continue;
+            }
+
+            // Undistort mouse position to content-space
+            let pane_rect = if per_pane_crt { Some(rect) } else { None };
+            let Some((cx, cy)) = self.screen_to_content(mouse_x, mouse_y, pane_rect) else {
+                continue;
+            };
+
+            let pane_right = (rect.x + rect.width) as f64 * win_width as f64 - PANE_PADDING as f64;
+            let pane_top = rect.y as f64 * win_height as f64 + PANE_PADDING as f64;
+            let pane_bottom =
+                (rect.y + rect.height) as f64 * win_height as f64 - PANE_PADDING as f64;
+
+            if cx >= pane_right - SCROLLBAR_HOVER_PROXIMITY
+                && cx <= pane_right
+                && cy >= pane_top
+                && cy <= pane_bottom
+            {
+                return Some(*pane_id);
+            }
+        }
+        None
+    }
+
+    /// Find the scrollbar geometry for a given screen-space pixel position, if any.
+    /// Undistorts coordinates before hit testing.
+    fn scrollbar_at(&self, screen_x: f64, screen_y: f64) -> Option<ScrollbarGeometry> {
+        let renderer = self.renderer.as_ref()?;
+        let (win_width, win_height) = renderer.window_size();
+        let rects = self.layout.pane_rects(win_width as f32, win_height as f32);
+        let per_pane_crt = self.current_config().per_pane_crt;
+
+        for geo in &self.scrollbar_geometries {
+            let pane_rect = if per_pane_crt {
+                rects.get(&geo.pane_id)
+            } else {
+                None
+            };
+            let Some((cx, cy)) = self.screen_to_content(screen_x, screen_y, pane_rect) else {
+                continue;
+            };
+            if geo.hit_test(cx, cy) {
+                return Some(*geo);
+            }
+        }
+        None
     }
 
     /// Find word boundaries around the given position.
@@ -1284,6 +1453,8 @@ impl App {
 
             let cursor_pos = terminal.cursor_position();
             let selection = &self.selection;
+            let search_active = self.search_ui.visible && is_focused;
+            let search_ui = &self.search_ui;
 
             let cells = terminal.with_grid(|grid| {
                 use alacritty_terminal::grid::Dimensions;
@@ -1337,6 +1508,10 @@ impl App {
                         // Selection uses buffer-relative rows (screen_row - display_offset)
                         let buffer_row = line_idx as i32 - display_offset;
                         let is_selected = is_focused && selection.contains(col_idx, buffer_row);
+                        let is_search_match =
+                            search_active && search_ui.is_match(line, Column(col_idx));
+                        let is_current_match =
+                            search_active && search_ui.is_current_match(line, Column(col_idx));
                         let is_dim = cell.flags.contains(Flags::DIM);
                         let is_inverse = cell.flags.contains(Flags::INVERSE);
 
@@ -1372,6 +1547,18 @@ impl App {
                         let (fg, bg) = if is_cursor || is_selected {
                             // Invert: swap fg and bg
                             (resolved_bg, cell_fg)
+                        } else if is_current_match {
+                            // Current match: bright inverted highlight
+                            (resolved_bg, cell_fg)
+                        } else if is_search_match {
+                            // Other matches: subtle highlight background
+                            let match_bg = [
+                                color_scheme.foreground[0] * 0.25,
+                                color_scheme.foreground[1] * 0.25,
+                                color_scheme.foreground[2] * 0.25,
+                                1.0,
+                            ];
+                            (cell_fg, match_bg)
                         } else {
                             (cell_fg, cell_bg)
                         };
@@ -1474,6 +1661,16 @@ impl App {
                 .find(|(pane_id, _, _, _)| *pane_id == dialog.pane_id)
             {
                 Self::overlay_paste_dialog(cells, dialog, &color_scheme);
+            }
+        }
+
+        // Overlay search bar on focused pane
+        if self.search_ui.visible {
+            if let Some((_, _, _, cells)) = pane_renders
+                .iter_mut()
+                .find(|(pane_id, _, _, _)| *pane_id == focused_pane)
+            {
+                SearchUI::overlay_search_bar(cells, &self.search_ui, &color_scheme);
             }
         }
 
@@ -1668,9 +1865,8 @@ impl App {
             })
             .collect();
 
-        // Calculate scrollbars for each pane (with per-pane opacity based on scroll time)
-        // Each scrollbar is (x, y, height, thumb_start, thumb_height, opacity) in pixels
-        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = self
+        // Calculate scrollbar geometries for each pane
+        self.scrollbar_geometries = self
             .layout
             .panes()
             .iter()
@@ -1683,8 +1879,8 @@ impl App {
                     return None; // No scrollback, no scrollbar
                 }
 
-                // Calculate per-pane scrollbar opacity
-                let scrollbar_opacity = self
+                // Calculate per-pane scrollbar opacity from multiple sources
+                let scroll_opacity = self
                     .last_scroll
                     .get(pane_id)
                     .map(|t| {
@@ -1700,6 +1896,23 @@ impl App {
                         }
                     })
                     .unwrap_or(0.0);
+
+                // Scrollbar is also visible when hovering near it, dragging, or searching
+                let hover_visible = self.scrollbar_hover_pane == Some(*pane_id);
+                let drag_visible = self
+                    .scrollbar_drag
+                    .as_ref()
+                    .map(|d| d.pane_id == *pane_id)
+                    .unwrap_or(false);
+                let search_visible = self.search_ui.visible
+                    && *pane_id == focused_pane
+                    && !self.search_ui.matches.is_empty();
+
+                let scrollbar_opacity = if drag_visible || hover_visible || search_visible {
+                    1.0
+                } else {
+                    scroll_opacity
+                };
 
                 if scrollbar_opacity < 0.001 {
                     return None; // Scrollbar fully faded
@@ -1723,8 +1936,6 @@ impl App {
                 let thumb_height = (track_height * visible_fraction).max(20.0); // Minimum 20px
 
                 // Thumb position: offset 0 = at bottom, offset = history = at top
-                // When offset = 0, thumb should be at bottom (track_height - thumb_height)
-                // When offset = history, thumb should be at top (0)
                 let scroll_fraction = if history > 0 {
                     offset as f32 / history as f32
                 } else {
@@ -1732,15 +1943,23 @@ impl App {
                 };
                 let thumb_start = (1.0 - scroll_fraction) * (track_height - thumb_height);
 
-                Some((
-                    scrollbar_x,
-                    pane_y,
+                Some(ScrollbarGeometry {
+                    pane_id: *pane_id,
+                    x: scrollbar_x,
+                    y: pane_y,
                     track_height,
                     thumb_start,
                     thumb_height,
-                    scrollbar_opacity,
-                ))
+                    opacity: scrollbar_opacity,
+                    history_size: history,
+                })
             })
+            .collect();
+
+        let scrollbars: Vec<(f32, f32, f32, f32, f32, f32)> = self
+            .scrollbar_geometries
+            .iter()
+            .map(|g| g.to_render_tuple())
             .collect();
 
         // If config UI is visible, render it instead of terminals
@@ -1862,7 +2081,7 @@ impl App {
             };
 
             // Build debug visualization lines - green rectangle around hovered cell
-            let debug_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> =
+            let mut debug_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> =
                 if let Some((cell_pos, _content, _local, pane_offset)) = mouse_debug {
                     let green = [0.0, 1.0, 0.0, 1.0];
                     let (pane_x, pane_y) = (pane_offset.0 as f32, pane_offset.1 as f32);
@@ -1891,6 +2110,51 @@ impl App {
                 } else {
                     Vec::new()
                 };
+
+            // Add search match indicators in the scrollbar track
+            if self.search_ui.visible && !self.search_ui.matches.is_empty() {
+                if let Some(geo) = self
+                    .scrollbar_geometries
+                    .iter()
+                    .find(|g| g.pane_id == focused_pane)
+                {
+                    let total_lines = geo.history_size as f32
+                        + self
+                            .terminals
+                            .get(&focused_pane)
+                            .map(|t| t.size().1 as f32)
+                            .unwrap_or(0.0);
+
+                    let fg = color_scheme.foreground;
+                    let match_color = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, geo.opacity];
+                    let current_color = [fg[0], fg[1], fg[2], geo.opacity];
+                    let indicator_width = SCROLLBAR_WIDTH + 4.0;
+
+                    for (i, m) in self.search_ui.matches.iter().enumerate() {
+                        // Line(-history_size) = top of track, Line(screen_lines-1) = bottom
+                        let line_from_top = (m.start.line.0 + geo.history_size as i32) as f32;
+                        let fraction = line_from_top / total_lines;
+                        let y = geo.y + fraction * geo.track_height;
+
+                        let is_current = i == self.search_ui.current_match;
+                        let (color, width) = if is_current {
+                            (current_color, indicator_width + 2.0)
+                        } else {
+                            (match_color, indicator_width)
+                        };
+
+                        let x_center = geo.x + SCROLLBAR_WIDTH / 2.0;
+                        debug_lines.push((
+                            x_center - width / 2.0,
+                            y,
+                            x_center + width / 2.0,
+                            y,
+                            2.0,
+                            color,
+                        ));
+                    }
+                }
+            }
 
             if let Err(e) = renderer.render_panes(
                 &panes,
@@ -2322,6 +2586,44 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
+
+                // Handle scrollbar drag
+                if let Some(ref drag) = self.scrollbar_drag {
+                    // Undistort current mouse position to content-space
+                    let per_pane_crt = self.current_config().per_pane_crt;
+                    let pane_rect = if per_pane_crt {
+                        self.renderer.as_ref().and_then(|r| {
+                            let (ww, wh) = r.window_size();
+                            let rects = self.layout.pane_rects(ww as f32, wh as f32);
+                            rects.get(&drag.pane_id).copied()
+                        })
+                    } else {
+                        None
+                    };
+                    let (_, cy) = self
+                        .screen_to_content(position.x, position.y, pane_rect.as_ref())
+                        .unwrap_or((position.x, position.y));
+
+                    let delta_y = cy - drag.start_y;
+                    let scroll_range = drag.geo.track_height - drag.geo.thumb_height;
+                    if scroll_range > 0.0 {
+                        let offset_delta =
+                            (delta_y as f32 / scroll_range) * drag.geo.history_size as f32;
+                        let new_offset = (drag.start_offset as f32 - offset_delta)
+                            .clamp(0.0, drag.geo.history_size as f32)
+                            as usize;
+                        let pane_id = drag.pane_id;
+                        if let Some(terminal) = self.terminals.get(&pane_id) {
+                            terminal.scroll_to_offset(new_offset);
+                            self.last_scroll.insert(pane_id, Instant::now());
+                        }
+                    }
+                    return;
+                }
+
+                // Check scrollbar hover proximity
+                self.scrollbar_hover_pane = self.check_scrollbar_hover(position.x, position.y);
+
                 if self.selection.active {
                     // Only update selection if pointing at valid content (not the void)
                     if let Some(pos) = self.pixel_to_cell(position.x, position.y) {
@@ -2333,6 +2635,62 @@ impl ApplicationHandler for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
+                            // Check if clicking on a scrollbar first
+                            // scrollbar_at already undistorts internally for hit testing
+                            let (mx, my) = self.mouse_pos;
+                            if let Some(geo) = self.scrollbar_at(mx, my) {
+                                // Undistort mouse position for thumb hit test and position math
+                                let per_pane_crt = self.current_config().per_pane_crt;
+                                let pane_rect = if per_pane_crt {
+                                    self.renderer.as_ref().and_then(|r| {
+                                        let (ww, wh) = r.window_size();
+                                        let rects = self.layout.pane_rects(ww as f32, wh as f32);
+                                        rects.get(&geo.pane_id).copied()
+                                    })
+                                } else {
+                                    None
+                                };
+                                let (cx, cy) = self
+                                    .screen_to_content(mx, my, pane_rect.as_ref())
+                                    .unwrap_or((mx, my));
+
+                                // Focus the pane that owns this scrollbar
+                                if geo.pane_id != self.layout.focused_pane() {
+                                    self.layout.set_focus(geo.pane_id);
+                                }
+
+                                let current_offset = self
+                                    .terminals
+                                    .get(&geo.pane_id)
+                                    .map(|t| t.display_offset())
+                                    .unwrap_or(0);
+
+                                if geo.thumb_hit_test(cx, cy) {
+                                    // Start dragging the thumb
+                                    self.scrollbar_drag = Some(ScrollbarDrag {
+                                        pane_id: geo.pane_id,
+                                        start_y: cy,
+                                        start_offset: current_offset,
+                                        geo,
+                                    });
+                                } else {
+                                    // Clicked on track: jump scroll to this position
+                                    let target_offset = geo.y_to_offset(cy);
+                                    if let Some(terminal) = self.terminals.get(&geo.pane_id) {
+                                        terminal.scroll_to_offset(target_offset);
+                                        self.last_scroll.insert(geo.pane_id, Instant::now());
+                                    }
+                                    // Start dragging from the new position
+                                    self.scrollbar_drag = Some(ScrollbarDrag {
+                                        pane_id: geo.pane_id,
+                                        start_y: cy,
+                                        start_offset: target_offset,
+                                        geo,
+                                    });
+                                }
+                                return;
+                            }
+
                             // Hit test to change focus
                             if let Some(renderer) = &self.renderer {
                                 let (win_width, win_height) = renderer.window_size();
@@ -2413,6 +2771,10 @@ impl ApplicationHandler for App {
                             }
                         }
                         ElementState::Released => {
+                            if self.scrollbar_drag.is_some() {
+                                self.scrollbar_drag = None;
+                                return;
+                            }
                             self.selection.active = false;
                             if self.config.behavior.auto_copy_selection {
                                 self.copy_selection();
@@ -2582,6 +2944,16 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Ctrl+Shift+F: Toggle search
+                    if ctrl && shift && event.logical_key == Key::Character("F".into()) {
+                        if self.search_ui.visible {
+                            self.search_ui.hide();
+                        } else {
+                            self.search_ui.show();
+                        }
+                        return;
+                    }
+
                     // Ctrl+Shift+T: Replay CRT power-on animation
                     if ctrl && shift && event.logical_key == Key::Character("T".into()) {
                         if let Some(renderer) = &mut self.renderer {
@@ -2745,6 +3117,97 @@ impl ApplicationHandler for App {
                                 }
                             }
                             _ => {}
+                        }
+                        return;
+                    }
+
+                    // Handle search UI input when visible
+                    if self.search_ui.visible {
+                        let focused = self.layout.focused_pane();
+                        let action = match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => {
+                                self.search_ui.hide();
+                                // Scroll back to bottom when closing search
+                                if let Some(terminal) = self.terminals.get(&focused) {
+                                    terminal.scroll_to_bottom();
+                                    self.last_scroll.insert(focused, Instant::now());
+                                }
+                                SearchAction::None
+                            }
+                            Key::Named(NamedKey::Enter) => {
+                                if shift {
+                                    self.search_ui.prev_match()
+                                } else {
+                                    self.search_ui.next_match()
+                                }
+                            }
+                            Key::Named(NamedKey::Backspace) => {
+                                if let Some(terminal) = self.terminals.get(&focused) {
+                                    self.search_ui.backspace(terminal)
+                                } else {
+                                    SearchAction::None
+                                }
+                            }
+                            Key::Named(NamedKey::Delete) => {
+                                if let Some(terminal) = self.terminals.get(&focused) {
+                                    self.search_ui.delete(terminal)
+                                } else {
+                                    SearchAction::None
+                                }
+                            }
+                            Key::Named(NamedKey::ArrowLeft) => {
+                                self.search_ui.cursor_left();
+                                SearchAction::None
+                            }
+                            Key::Named(NamedKey::ArrowRight) => {
+                                self.search_ui.cursor_right();
+                                SearchAction::None
+                            }
+                            Key::Named(NamedKey::ArrowUp) => self.search_ui.prev_match(),
+                            Key::Named(NamedKey::ArrowDown) => self.search_ui.next_match(),
+                            Key::Named(NamedKey::Space) => {
+                                if let Some(terminal) = self.terminals.get(&focused) {
+                                    self.search_ui.insert_char(' ', terminal)
+                                } else {
+                                    SearchAction::None
+                                }
+                            }
+                            Key::Character(s) => {
+                                // Don't insert if ctrl is held (those are hotkeys)
+                                if ctrl || super_key {
+                                    SearchAction::None
+                                } else if let Some(terminal) = self.terminals.get(&focused) {
+                                    let mut action = SearchAction::None;
+                                    for c in s.chars() {
+                                        action = self.search_ui.insert_char(c, terminal);
+                                    }
+                                    action
+                                } else {
+                                    SearchAction::None
+                                }
+                            }
+                            _ => SearchAction::None,
+                        };
+
+                        // Handle the search action
+                        match action {
+                            SearchAction::ScrollToMatch(point) => {
+                                if let Some(terminal) = self.terminals.get(&focused) {
+                                    let (_, rows) = terminal.size();
+                                    let history = terminal.history_size();
+                                    // point.line: Line(0) = first screen row at display_offset=0,
+                                    // negative = scrollback history.
+                                    // With display_offset=D, screen shows Line(-D) at top.
+                                    // To center: -D + rows/2 = point.line.0
+                                    //   => D = rows/2 - point.line.0
+                                    let target_offset =
+                                        (rows as i32 / 2 - point.line.0).max(0) as usize;
+                                    let clamped = target_offset.min(history);
+                                    terminal.scroll_to_offset(clamped);
+                                    self.last_scroll.insert(focused, Instant::now());
+                                }
+                            }
+                            SearchAction::UpdateHighlights | SearchAction::None => {}
                         }
                         return;
                     }

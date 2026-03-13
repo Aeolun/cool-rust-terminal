@@ -298,6 +298,32 @@ impl Terminal {
         term.grid().history_size()
     }
 
+    /// Scroll to a specific display offset (0 = bottom, history_size = top)
+    pub fn scroll_to_offset(&self, offset: usize) {
+        let mut term = self.term.lock();
+        let current = term.grid().display_offset();
+        let delta = offset as i32 - current as i32;
+        term.scroll_display(Scroll::Delta(delta));
+    }
+
+    /// Collect all regex matches in the terminal scrollback and screen.
+    /// Returns matches as Vec of (start_point, end_point) pairs.
+    pub fn search_all(
+        &self,
+        regex: &mut alacritty_terminal::term::search::RegexSearch,
+    ) -> Vec<std::ops::RangeInclusive<alacritty_terminal::index::Point>> {
+        use alacritty_terminal::grid::Dimensions;
+        use alacritty_terminal::index::{Column, Direction, Point};
+        use alacritty_terminal::term::search::RegexIter;
+
+        let term = self.term.lock();
+        let grid = term.grid();
+        let start = Point::new(grid.topmost_line(), Column(0));
+        let end = Point::new(grid.bottommost_line(), grid.last_column());
+
+        RegexIter::new(start, end, Direction::Right, &term, regex).collect()
+    }
+
     /// Check if Kitty keyboard protocol is enabled
     pub fn kitty_keyboard_enabled(&self) -> bool {
         use alacritty_terminal::term::TermMode;
