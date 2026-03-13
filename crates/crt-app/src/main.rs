@@ -20,7 +20,7 @@ use winit::window::{Icon, Window, WindowAttributes, WindowId};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb as AnsiRgb};
 use config_ui::{ConfigAction, ConfigUI};
 use crt_core::{BdfFont, ColorScheme, Config, Font, ScanlineMode, SessionData, UpdateInfo};
-use crt_layout::{LayoutTree, PaneId};
+use crt_layout::{Direction, LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::{TermMode, Terminal};
 
@@ -389,6 +389,10 @@ struct App {
     /// Cached update info after check completes
     update_info: Option<UpdateInfo>,
     last_font_settings: Option<ActiveFontSettings>,
+    /// Global hotkey manager for system-wide show/focus hotkey
+    hotkey_manager: Option<global_hotkey::GlobalHotKeyManager>,
+    /// Currently registered global hotkey ID (for unregistering)
+    registered_hotkey: Option<global_hotkey::hotkey::HotKey>,
 }
 
 struct PasteDialog {
@@ -443,6 +447,8 @@ impl App {
             update_receiver: None,
             update_info: None,
             last_font_settings: None,
+            hotkey_manager: None,
+            registered_hotkey: None,
         }
     }
 
@@ -1940,6 +1946,79 @@ impl App {
         }
         exited
     }
+
+    /// Initialize the global hotkey manager and register the configured hotkey (if any)
+    fn init_global_hotkey(&mut self) {
+        match global_hotkey::GlobalHotKeyManager::new() {
+            Ok(manager) => {
+                self.hotkey_manager = Some(manager);
+                if let Some(hotkey_str) = self.config.behavior.global_hotkey.clone() {
+                    self.register_global_hotkey(&hotkey_str);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to create global hotkey manager: {}", e);
+            }
+        }
+    }
+
+    /// Register a global hotkey from a string like "Ctrl+Shift+T" or "F12"
+    fn register_global_hotkey(&mut self, hotkey_str: &str) {
+        // Unregister any existing hotkey first
+        if let (Some(manager), Some(old)) = (&self.hotkey_manager, self.registered_hotkey.take()) {
+            let _ = manager.unregister(old);
+        }
+
+        let Some(manager) = &self.hotkey_manager else {
+            return;
+        };
+
+        match hotkey_str.parse::<global_hotkey::hotkey::HotKey>() {
+            Ok(hotkey) => {
+                if let Err(e) = manager.register(hotkey) {
+                    tracing::error!("Failed to register global hotkey '{}': {}", hotkey_str, e);
+                } else {
+                    tracing::info!("Registered global hotkey: {}", hotkey_str);
+                    self.registered_hotkey = Some(hotkey);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to parse global hotkey '{}': {}", hotkey_str, e);
+            }
+        }
+    }
+
+    /// Unregister the current global hotkey
+    fn unregister_global_hotkey(&mut self) {
+        if let (Some(manager), Some(hotkey)) = (&self.hotkey_manager, self.registered_hotkey.take())
+        {
+            if let Err(e) = manager.unregister(hotkey) {
+                tracing::warn!("Failed to unregister global hotkey: {}", e);
+            }
+        }
+    }
+
+    /// Check for global hotkey events and focus the window if triggered
+    fn poll_global_hotkey(&self) {
+        if self.registered_hotkey.is_none() {
+            return;
+        }
+        if let Ok(event) = global_hotkey::GlobalHotKeyEvent::receiver().try_recv() {
+            if event.state != global_hotkey::HotKeyState::Pressed {
+                return;
+            }
+            if let Some(window) = &self.window {
+                if window.has_focus() {
+                    window.set_visible(false);
+                    tracing::info!("Global hotkey triggered: hiding window");
+                } else {
+                    window.set_visible(true);
+                    window.focus_window();
+                    tracing::info!("Global hotkey triggered: showing window");
+                }
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -2082,6 +2161,9 @@ impl ApplicationHandler for App {
             tracing::info!("Session data restored");
         }
 
+        // Initialize global hotkey manager
+        self.init_global_hotkey();
+
         let (cols, rows) = self.renderer.as_ref().unwrap().grid_size();
         tracing::info!("Window and renderer initialized ({}x{} cells)", cols, rows);
     }
@@ -2186,6 +2268,9 @@ impl ApplicationHandler for App {
                 }
 
                 let _span = tracing::trace_span!("redraw_requested").entered();
+
+                // Poll for global hotkey events
+                self.poll_global_hotkey();
 
                 // Check for update check results
                 if let Some(ref rx) = self.update_receiver {
@@ -2505,6 +2590,28 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Ctrl+Shift+Arrow: Navigate between panes
+                    if ctrl && shift {
+                        let direction = match event.logical_key {
+                            Key::Named(NamedKey::ArrowLeft) => Some(Direction::Left),
+                            Key::Named(NamedKey::ArrowRight) => Some(Direction::Right),
+                            Key::Named(NamedKey::ArrowUp) => Some(Direction::Up),
+                            Key::Named(NamedKey::ArrowDown) => Some(Direction::Down),
+                            _ => None,
+                        };
+                        if let Some(dir) = direction {
+                            if let Some(renderer) = &self.renderer {
+                                let (w, h) = renderer.window_size();
+                                if let Some(pane) =
+                                    self.layout.focus_direction(dir, w as f32, h as f32)
+                                {
+                                    tracing::info!("Focus changed to pane {:?}", pane);
+                                }
+                            }
+                            return;
+                        }
+                    }
+
                     // Shift+PageUp/PageDown: Scroll history
                     if shift && !ctrl && event.logical_key == Key::Named(NamedKey::PageUp) {
                         let focused = self.layout.focused_pane();
@@ -2525,6 +2632,48 @@ impl ApplicationHandler for App {
 
                     // Handle config UI navigation when visible
                     if self.config_ui.visible {
+                        // Hotkey recording mode: capture the next keypress
+                        if self.config_ui.recording_hotkey {
+                            match &event.logical_key {
+                                Key::Named(NamedKey::Escape) => {
+                                    // Cancel recording
+                                    self.config_ui.recording_hotkey = false;
+                                }
+                                Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                                    // Clear the hotkey
+                                    self.config_ui.record_hotkey(None);
+                                }
+                                // Ignore bare modifier keys — wait for actual key
+                                Key::Named(
+                                    NamedKey::Shift
+                                    | NamedKey::Control
+                                    | NamedKey::Alt
+                                    | NamedKey::Super,
+                                ) => {}
+                                key => {
+                                    if let Some(hotkey_str) =
+                                        winit_key_to_hotkey_string(key, self.modifiers)
+                                    {
+                                        // Validate the hotkey string parses correctly
+                                        if hotkey_str
+                                            .parse::<global_hotkey::hotkey::HotKey>()
+                                            .is_ok()
+                                        {
+                                            self.config_ui.record_hotkey(Some(hotkey_str));
+                                        } else {
+                                            tracing::warn!(
+                                                "Key combination not supported as global hotkey"
+                                            );
+                                            self.config_ui.recording_hotkey = false;
+                                        }
+                                    } else {
+                                        self.config_ui.recording_hotkey = false;
+                                    }
+                                }
+                            }
+                            return;
+                        }
+
                         match &event.logical_key {
                             Key::Named(NamedKey::Escape) => {
                                 self.config = self.config_ui.cancel();
@@ -2571,7 +2720,18 @@ impl ApplicationHandler for App {
                                                 self.config = new_config.clone();
                                                 self.resize_terminals();
                                             }
+                                            // Update global hotkey registration
+                                            let old_hotkey =
+                                                self.config.behavior.global_hotkey.clone();
+                                            let new_hotkey =
+                                                new_config.behavior.global_hotkey.clone();
                                             self.config = new_config;
+                                            if old_hotkey != new_hotkey {
+                                                match &new_hotkey {
+                                                    Some(hk) => self.register_global_hotkey(hk),
+                                                    None => self.unregister_global_hotkey(),
+                                                }
+                                            }
                                             if let Err(e) = self.config.save_to_default() {
                                                 tracing::error!("Failed to save config: {}", e);
                                             } else {
@@ -2859,6 +3019,126 @@ fn load_icon() -> Option<Icon> {
     let image = image::load_from_memory(icon_bytes).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     Icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
+/// Convert a winit Key + ModifiersState into a global-hotkey compatible string.
+/// Returns None for keys that can't be represented.
+fn winit_key_to_hotkey_string(key: &Key, modifiers: ModifiersState) -> Option<String> {
+    let key_part = match key {
+        Key::Character(s) => {
+            let c = s.to_uppercase();
+            match c.as_str() {
+                "A" => "KeyA",
+                "B" => "KeyB",
+                "C" => "KeyC",
+                "D" => "KeyD",
+                "E" => "KeyE",
+                "F" => "KeyF",
+                "G" => "KeyG",
+                "H" => "KeyH",
+                "I" => "KeyI",
+                "J" => "KeyJ",
+                "K" => "KeyK",
+                "L" => "KeyL",
+                "M" => "KeyM",
+                "N" => "KeyN",
+                "O" => "KeyO",
+                "P" => "KeyP",
+                "Q" => "KeyQ",
+                "R" => "KeyR",
+                "S" => "KeyS",
+                "T" => "KeyT",
+                "U" => "KeyU",
+                "V" => "KeyV",
+                "W" => "KeyW",
+                "X" => "KeyX",
+                "Y" => "KeyY",
+                "Z" => "KeyZ",
+                "0" => "Digit0",
+                "1" => "Digit1",
+                "2" => "Digit2",
+                "3" => "Digit3",
+                "4" => "Digit4",
+                "5" => "Digit5",
+                "6" => "Digit6",
+                "7" => "Digit7",
+                "8" => "Digit8",
+                "9" => "Digit9",
+                "`" => "Backquote",
+                "-" => "Minus",
+                "=" => "Equal",
+                "[" => "BracketLeft",
+                "]" => "BracketRight",
+                "\\" => "Backslash",
+                ";" => "Semicolon",
+                "'" => "Quote",
+                "," => "Comma",
+                "." => "Period",
+                "/" => "Slash",
+                _ => return None,
+            }
+        }
+        Key::Named(named) => match named {
+            NamedKey::F1 => "F1",
+            NamedKey::F2 => "F2",
+            NamedKey::F3 => "F3",
+            NamedKey::F4 => "F4",
+            NamedKey::F5 => "F5",
+            NamedKey::F6 => "F6",
+            NamedKey::F7 => "F7",
+            NamedKey::F8 => "F8",
+            NamedKey::F9 => "F9",
+            NamedKey::F10 => "F10",
+            NamedKey::F11 => "F11",
+            NamedKey::F12 => "F12",
+            NamedKey::F13 => "F13",
+            NamedKey::F14 => "F14",
+            NamedKey::F15 => "F15",
+            NamedKey::F16 => "F16",
+            NamedKey::F17 => "F17",
+            NamedKey::F18 => "F18",
+            NamedKey::F19 => "F19",
+            NamedKey::F20 => "F20",
+            NamedKey::Space => "Space",
+            NamedKey::Enter => "Enter",
+            NamedKey::Tab => "Tab",
+            NamedKey::Backspace => "Backspace",
+            NamedKey::Delete => "Delete",
+            NamedKey::Insert => "Insert",
+            NamedKey::Home => "Home",
+            NamedKey::End => "End",
+            NamedKey::PageUp => "PageUp",
+            NamedKey::PageDown => "PageDown",
+            NamedKey::ArrowUp => "ArrowUp",
+            NamedKey::ArrowDown => "ArrowDown",
+            NamedKey::ArrowLeft => "ArrowLeft",
+            NamedKey::ArrowRight => "ArrowRight",
+            NamedKey::CapsLock => "CapsLock",
+            NamedKey::ScrollLock => "ScrollLock",
+            NamedKey::NumLock => "NumLock",
+            NamedKey::PrintScreen => "PrintScreen",
+            NamedKey::Pause => "Pause",
+            _ => return None,
+        },
+        _ => return None,
+    };
+
+    let mut parts = Vec::new();
+    if modifiers.control_key() {
+        parts.push("Ctrl");
+    }
+    if modifiers.alt_key() {
+        parts.push("Alt");
+    }
+    if modifiers.shift_key() {
+        parts.push("Shift");
+    }
+    if modifiers.super_key() {
+        parts.push("Super");
+    }
+    parts.push(key_part);
+
+    Some(parts.join("+"))
 }
 
 fn main() -> Result<()> {

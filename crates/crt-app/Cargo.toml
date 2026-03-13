@@ -50,6 +50,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 pollster = { workspace = true }
 arboard = "3"
+global-hotkey = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing-tracy = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }

@@ -80,6 +80,7 @@ pub enum ConfigField {
     ShowStartupHint,
     ShowKittyMessage,
     CheckForUpdates,
+    GlobalHotkey,
     // Common
     Save,
     Cancel,
@@ -126,6 +127,7 @@ impl ConfigField {
             ConfigField::ShowStartupHint,
             ConfigField::ShowKittyMessage,
             ConfigField::CheckForUpdates,
+            ConfigField::GlobalHotkey,
             // Common
             ConfigField::Save,
             ConfigField::Cancel,
@@ -140,6 +142,7 @@ impl ConfigField {
                 | ConfigField::BezelEnabled
                 | ConfigField::BeamSimulation
                 | ConfigField::HighDpiFontType
+                | ConfigField::GlobalHotkey
         )
     }
 
@@ -180,6 +183,7 @@ impl ConfigField {
             ConfigField::ShowStartupHint => "Startup hint",
             ConfigField::ShowKittyMessage => "Kitty msg",
             ConfigField::CheckForUpdates => "Check updates",
+            ConfigField::GlobalHotkey => "Show hotkey",
             ConfigField::Save => "[ Save ]",
             ConfigField::Cancel => "[ Cancel ]",
         }
@@ -238,6 +242,10 @@ impl ConfigField {
         )
     }
 
+    fn is_hotkey_recorder(&self) -> bool {
+        matches!(self, ConfigField::GlobalHotkey)
+    }
+
     fn is_button(&self) -> bool {
         matches!(self, ConfigField::Save | ConfigField::Cancel)
     }
@@ -281,7 +289,8 @@ impl ConfigField {
             | ConfigField::StripPasteCr
             | ConfigField::ShowStartupHint
             | ConfigField::ShowKittyMessage
-            | ConfigField::CheckForUpdates => Some(ConfigTab::Behavior),
+            | ConfigField::CheckForUpdates
+            | ConfigField::GlobalHotkey => Some(ConfigTab::Behavior),
             // Save/Cancel are on all tabs
             ConfigField::Save | ConfigField::Cancel => None,
         }
@@ -326,6 +335,8 @@ pub struct ConfigUI {
     pub current_tab: ConfigTab,
     pub config: Config,
     original_config: Config,
+    /// When true, the next keypress will be captured as the global hotkey
+    pub recording_hotkey: bool,
 }
 
 impl ConfigUI {
@@ -336,6 +347,7 @@ impl ConfigUI {
             current_tab: ConfigTab::Effects,
             config: config.clone(),
             original_config: config,
+            recording_hotkey: false,
         }
     }
 
@@ -523,10 +535,22 @@ impl ConfigUI {
                 self.config.effects.interlace_enabled = !self.config.effects.interlace_enabled;
                 None
             }
+            ConfigField::GlobalHotkey => {
+                self.recording_hotkey = true;
+                None
+            }
             ConfigField::Save => Some(ConfigAction::Save),
             ConfigField::Cancel => Some(ConfigAction::Cancel),
             _ => None,
         }
+    }
+
+    /// Record a hotkey from a key event. Returns true if the event was consumed.
+    /// Call this when recording_hotkey is true.
+    pub fn record_hotkey(&mut self, key_str: Option<String>) {
+        // key_str is None to clear (Delete/Backspace), or Some("Ctrl+F12") etc.
+        self.config.behavior.global_hotkey = key_str;
+        self.recording_hotkey = false;
     }
 
     fn adjust_field(&mut self, field: ConfigField, delta: f32) {
@@ -714,6 +738,10 @@ impl ConfigUI {
             }
             ConfigField::Interlace => {
                 effects.interlace_enabled = delta > 0.0;
+            }
+            ConfigField::GlobalHotkey => {
+                // Left/Right on hotkey field: enter recording mode
+                self.recording_hotkey = true;
             }
             _ => {}
         }
@@ -1103,6 +1131,17 @@ impl ConfigUI {
             let state = if is_on { "[ON ]" } else { "[OFF]" };
             let prefix = if selected { "> " } else { "  " };
             format!("{}{:12} {}", prefix, label, state)
+        } else if field.is_hotkey_recorder() {
+            let prefix = if selected { "> " } else { "  " };
+            let value = if self.recording_hotkey && selected {
+                "Press key...".to_string()
+            } else {
+                match &self.config.behavior.global_hotkey {
+                    Some(hk) => hk.clone(),
+                    None => "Not Set".to_string(),
+                }
+            };
+            format!("{}{:12} [{}]", prefix, label, value)
         } else if field.is_button() {
             let prefix = if selected { "> " } else { "  " };
             format!("{}{}", prefix, label)

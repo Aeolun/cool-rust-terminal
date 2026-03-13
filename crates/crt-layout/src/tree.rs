@@ -24,6 +24,18 @@ impl Rect {
             height: 1.0,
         }
     }
+
+    pub fn center(&self) -> (f32, f32) {
+        (self.x + self.width / 2.0, self.y + self.height / 2.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[derive(Debug)]
@@ -96,6 +108,64 @@ impl LayoutTree {
     /// Get all pane IDs
     pub fn panes(&self) -> &[PaneId] {
         &self.panes
+    }
+
+    /// Move focus to the nearest pane in the given direction.
+    /// Returns the newly focused pane, or None if no pane exists in that direction.
+    pub fn focus_direction(
+        &mut self,
+        direction: Direction,
+        width: f32,
+        height: f32,
+    ) -> Option<PaneId> {
+        if self.panes.len() <= 1 {
+            return None;
+        }
+
+        let rects = self.pane_rects(width, height);
+        let focused_rect = rects.get(&self.focused)?;
+        let (fx, fy) = focused_rect.center();
+
+        let mut best: Option<(PaneId, f32)> = None;
+
+        for (&pane_id, rect) in &rects {
+            if pane_id == self.focused {
+                continue;
+            }
+
+            let (cx, cy) = rect.center();
+            let dx = cx - fx;
+            let dy = cy - fy;
+
+            // Check if this pane is in the right direction
+            let in_direction = match direction {
+                Direction::Left => dx < -0.001,
+                Direction::Right => dx > 0.001,
+                Direction::Up => dy < -0.001,
+                Direction::Down => dy > 0.001,
+            };
+
+            if !in_direction {
+                continue;
+            }
+
+            // Distance, weighted so the primary axis matters more
+            let dist = match direction {
+                Direction::Left | Direction::Right => dx * dx + dy * dy * 4.0,
+                Direction::Up | Direction::Down => dx * dx * 4.0 + dy * dy,
+            };
+
+            if best.is_none() || dist < best.unwrap().1 {
+                best = Some((pane_id, dist));
+            }
+        }
+
+        if let Some((pane_id, _)) = best {
+            self.focused = pane_id;
+            Some(pane_id)
+        } else {
+            None
+        }
     }
 
     /// Get all panes with their layout rectangles.
@@ -468,5 +538,104 @@ mod tests {
         // Points outside 0.0-1.0 should return None
         assert_eq!(tree.hit_test(1.5, 0.5, 800.0, 600.0), None);
         assert_eq!(tree.hit_test(-0.1, 0.5, 800.0, 600.0), None);
+    }
+
+    #[test]
+    fn focus_direction_two_panes_landscape() {
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        let second = tree.add_pane();
+
+        // Focus is on second (right). Move left should go to first.
+        assert_eq!(tree.focused_pane(), second);
+        assert_eq!(
+            tree.focus_direction(Direction::Left, 800.0, 600.0),
+            Some(first)
+        );
+        assert_eq!(tree.focused_pane(), first);
+
+        // Move right should go back to second
+        assert_eq!(
+            tree.focus_direction(Direction::Right, 800.0, 600.0),
+            Some(second)
+        );
+        assert_eq!(tree.focused_pane(), second);
+    }
+
+    #[test]
+    fn focus_direction_two_panes_portrait() {
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        let second = tree.add_pane();
+
+        // Portrait: panes are stacked vertically
+        assert_eq!(
+            tree.focus_direction(Direction::Up, 600.0, 800.0),
+            Some(first)
+        );
+        assert_eq!(tree.focused_pane(), first);
+
+        assert_eq!(
+            tree.focus_direction(Direction::Down, 600.0, 800.0),
+            Some(second)
+        );
+        assert_eq!(tree.focused_pane(), second);
+    }
+
+    #[test]
+    fn focus_direction_no_pane_in_direction() {
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        tree.add_pane();
+        tree.set_focus(first);
+
+        // In landscape, first pane is leftmost — can't go further left
+        assert_eq!(tree.focus_direction(Direction::Left, 800.0, 600.0), None);
+        assert_eq!(tree.focused_pane(), first);
+    }
+
+    #[test]
+    fn focus_direction_single_pane() {
+        let mut tree = LayoutTree::new();
+        assert_eq!(tree.focus_direction(Direction::Right, 800.0, 600.0), None);
+    }
+
+    #[test]
+    fn focus_direction_four_pane_grid() {
+        // 4 panes in landscape (800x600) = 2x2 grid:
+        // [first]  [third]
+        // [second] [fourth]
+        let mut tree = LayoutTree::new();
+        let first = tree.focused_pane();
+        let second = tree.add_pane();
+        let third = tree.add_pane();
+        let fourth = tree.add_pane();
+
+        // Start at first (top-left)
+        tree.set_focus(first);
+
+        // Right should go to third (top-right)
+        assert_eq!(
+            tree.focus_direction(Direction::Right, 800.0, 600.0),
+            Some(third)
+        );
+
+        // Down from third should go to fourth (bottom-right)
+        assert_eq!(
+            tree.focus_direction(Direction::Down, 800.0, 600.0),
+            Some(fourth)
+        );
+
+        // Left from fourth should go to second (bottom-left)
+        assert_eq!(
+            tree.focus_direction(Direction::Left, 800.0, 600.0),
+            Some(second)
+        );
+
+        // Up from second should go to first (top-left)
+        assert_eq!(
+            tree.focus_direction(Direction::Up, 800.0, 600.0),
+            Some(first)
+        );
     }
 }

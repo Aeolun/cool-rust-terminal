@@ -405,6 +405,9 @@ pub struct BehaviorSettings {
     pub confirm_unsafe_paste: bool,
     /// Strip carriage returns from pasted text
     pub strip_paste_cr: bool,
+    /// Global hotkey to show/focus the application (e.g. "Ctrl+Shift+T", "F12", "CapsLock")
+    /// None means no global hotkey is registered
+    pub global_hotkey: Option<String>,
 }
 
 impl Default for BehaviorSettings {
@@ -417,6 +420,7 @@ impl Default for BehaviorSettings {
             check_for_updates: true,
             confirm_unsafe_paste: true,
             strip_paste_cr: true,
+            global_hotkey: None,
         }
     }
 }

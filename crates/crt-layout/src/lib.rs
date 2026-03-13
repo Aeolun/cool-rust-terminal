@@ -3,4 +3,4 @@
 
 mod tree;
 
-pub use tree::{LayoutTree, PaneId, Rect};
+pub use tree::{Direction, LayoutTree, PaneId, Rect};
