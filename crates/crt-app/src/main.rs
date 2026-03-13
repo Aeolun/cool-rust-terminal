@@ -1749,7 +1749,7 @@ impl App {
                     // Show version and hint lines
                     size_indicators.push((
                         center_x,
-                        center_y - cell_h * (2.5 + line_offset),
+                        center_y - cell_h * (4.0 + line_offset),
                         format!("Cool Rust Term v{}", env!("CARGO_PKG_VERSION")),
                     ));
 
@@ -1758,22 +1758,25 @@ impl App {
                         if info.update_available {
                             size_indicators.push((
                                 center_x,
-                                center_y - cell_h * 1.0,
+                                center_y - cell_h * 2.5,
                                 format!("Update available: v{}", info.latest_version),
                             ));
                         }
                     }
 
-                    size_indicators.push((
-                        center_x,
-                        center_y + cell_h * line_offset,
-                        "Ctrl+, for settings".to_string(),
-                    ));
-                    size_indicators.push((
-                        center_x,
-                        center_y + cell_h * (1.5 + line_offset),
-                        "Ctrl+Shift+Enter for new pane".to_string(),
-                    ));
+                    let hints = [
+                        "Ctrl+, for settings",
+                        "Ctrl+Shift+Enter for new pane",
+                        "Ctrl+Shift+Arrow to navigate panes",
+                        "Ctrl+Shift+F to search scrollback",
+                    ];
+                    for (i, hint) in hints.iter().enumerate() {
+                        size_indicators.push((
+                            center_x,
+                            center_y + cell_h * (i as f32 * 1.5 + line_offset),
+                            hint.to_string(),
+                        ));
+                    }
                 }
             }
         }
