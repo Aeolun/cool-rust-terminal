@@ -45,7 +45,12 @@ struct CrtUniforms {
     content_scale_y: f32,
     // Cell height in pixels for scanline alignment (one scanline per text row)
     cell_height: f32,
+    // Easter egg effects
+    degauss_progress: f32, // 0.0 = inactive, 0.0-1.0 = animation progress
+    hsync_intensity: f32,  // 0.0 = off, ~1.0 = full horizontal sync loss
     _pad1: f32,
+    _pad2: f32,
+    _pad3: f32,
     // Focus glow color (follows font color) - vec4 for alignment (w ignored)
     glow_color: vec4<f32>,
     // Pane rects (max 16 panes)
@@ -77,6 +82,92 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
     out.uv = vec2<f32>((x + 1.0) * 0.5, (1.0 - y) * 0.5);
 
     return out;
+}
+
+// Degauss effect - simulates CRT degaussing coil
+// Creates sinusoidal UV warping with chromatic aberration that decays over time
+fn apply_degauss(color: vec3<f32>, uv: vec2<f32>, progress: f32) -> vec3<f32> {
+    if (progress <= 0.0 || progress >= 1.0) {
+        return color;
+    }
+
+    // Envelope: ramp up quickly, sustain, then decay
+    // Peak intensity at ~20% through, then exponential decay
+    let envelope = sin(progress * 3.14159) * (1.0 - progress);
+
+    // Multiple frequency wobble for organic feel
+    let wobble_x = sin(uv.y * 25.0 + progress * 40.0) * 0.02 * envelope
+                 + sin(uv.y * 13.0 - progress * 25.0) * 0.015 * envelope
+                 + sin(uv.y * 7.0 + progress * 60.0) * 0.008 * envelope;
+    let wobble_y = sin(uv.x * 20.0 + progress * 35.0) * 0.01 * envelope
+                 + cos(uv.x * 11.0 - progress * 20.0) * 0.008 * envelope;
+
+    // Chromatic aberration: split RGB channels with offset
+    let chroma_spread = envelope * 0.015;
+    let offset_r = vec2<f32>(wobble_x + chroma_spread, wobble_y + chroma_spread * 0.5);
+    let offset_g = vec2<f32>(wobble_x, wobble_y);
+    let offset_b = vec2<f32>(wobble_x - chroma_spread, wobble_y - chroma_spread * 0.5);
+
+    let r = textureSample(input_texture, input_sampler, uv + offset_r).r;
+    let g = textureSample(input_texture, input_sampler, uv + offset_g).g;
+    let b = textureSample(input_texture, input_sampler, uv + offset_b).b;
+
+    // Blend between normal color and degaussed color based on envelope
+    let degaussed = vec3<f32>(r, g, b);
+
+    // Add color tint that shifts through the rainbow during the effect
+    let hue = progress * 6.28318 * 2.0; // Two full color rotations
+    let tint = vec3<f32>(
+        sin(hue) * 0.5 + 0.5,
+        sin(hue + 2.094) * 0.5 + 0.5,
+        sin(hue + 4.189) * 0.5 + 0.5
+    );
+    let tinted = degaussed + tint * envelope * 0.15;
+
+    // Brightness surge during peak of degauss
+    let brightness_boost = 1.0 + envelope * 0.3;
+
+    return mix(color, tinted * brightness_boost, min(envelope * 3.0, 1.0));
+}
+
+// Horizontal sync loss - simulates misadjusted H-HOLD knob on a CRT
+// Scanlines drift continuously in one direction and wrap, creating diagonal tear bands
+fn apply_hsync_loss(uv: vec2<f32>, intensity: f32, screen_height: f32) -> vec2<f32> {
+    if (intensity <= 0.0) {
+        return uv;
+    }
+
+    let scanline = floor(uv.y * screen_height);
+
+    // The H-oscillator is close to the correct frequency but not quite locked.
+    // It beats in and out of sync — sometimes the picture nearly stabilizes,
+    // then drifts away again. This is the signature H-HOLD look.
+    let skew = 0.0008; // Per-scanline skew (shallow angle)
+
+    // Slow beat: drift rate oscillates, passing through near-zero (almost synced)
+    // then speeding up again. Multiple incommensurate periods so it never repeats exactly.
+    let beat = sin(uniforms.time * 0.7) * 0.6
+             + sin(uniforms.time * 0.31) * 0.3
+             + sin(uniforms.time * 0.13) * 0.1;
+    // Bias so it spends more time drifting than synced (sync is a brief moment)
+    let drift_rate = 0.15 + beat * 0.15;
+
+    // Integrate drift (approximate — accumulates over time)
+    let base_offset = scanline * skew + uniforms.time * drift_rate;
+
+    // Irregularity: vary the skew per region so tear bands aren't evenly spaced
+    let region = sin(scanline * 0.003 + uniforms.time * 0.2) * 0.4;
+    // Per-scanline hash jitter (frequency instability)
+    let jitter_seed = scanline * 73.137 + uniforms.time * 17.31;
+    let jitter = (fract(sin(jitter_seed) * 43758.5453) - 0.5) * 0.012;
+
+    // fract wraps around; shift to -0.5..0.5 so the tear moves across screen
+    let offset = fract(base_offset + region * skew * scanline + jitter) - 0.5;
+
+    // Wrap the x coordinate so content reappears on the other side
+    let new_x = fract(uv.x + offset * intensity);
+
+    return vec2<f32>(new_x, uv.y);
 }
 
 // Barrel distortion - attempt to curve UV coords like a CRT screen
@@ -354,11 +445,14 @@ fn apply_whole_screen_crt(uv: vec2<f32>) -> vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    var color = texture_bicubic(distorted_uv);
+    // H-sync loss shifts where we sample content, but screen glass stays put
+    let sample_uv = apply_hsync_loss(distorted_uv, uniforms.hsync_intensity, uniforms.screen_size.y);
+
+    var color = texture_bicubic(sample_uv);
 
     if (uniforms.bloom_intensity > 0.0) {
         let texel_size = 1.0 / uniforms.screen_size;
-        let bloomed = bloom(distorted_uv, texel_size);
+        let bloomed = bloom(sample_uv, texel_size);
         color = mix(color, bloomed + color * 0.5, uniforms.bloom_intensity * 0.5);
     }
 
@@ -376,6 +470,9 @@ fn apply_whole_screen_crt(uv: vec2<f32>) -> vec4<f32> {
 
     // Apply brightness
     color = color * uniforms.brightness;
+
+    // Apply degauss effect
+    color = apply_degauss(color, distorted_uv, uniforms.degauss_progress);
 
     // Apply AA edge fade
     color = color * edge_alpha;
@@ -450,8 +547,9 @@ fn apply_per_pane_crt(uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    // Convert back to global UV for sampling
-    let sample_uv = local_to_global_uv(distorted_local, pane_idx);
+    // Convert back to global UV for sampling, with H-sync loss applied in local space
+    let hsync_local = apply_hsync_loss(distorted_local, uniforms.hsync_intensity, pane_size.y);
+    let sample_uv = local_to_global_uv(hsync_local, pane_idx);
 
     var color = texture_bicubic(sample_uv);
 
@@ -484,6 +582,9 @@ fn apply_per_pane_crt(uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
 
     // Apply brightness
     color = color * uniforms.brightness;
+
+    // Apply degauss effect (use local UV for per-pane)
+    color = apply_degauss(color, distorted_local, uniforms.degauss_progress);
 
     // Apply AA edge fade
     color = color * edge_alpha;
@@ -638,10 +739,11 @@ fn apply_bezel_mode_crt(screen_uv: vec2<f32>) -> vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    // Scale the distorted UV for sampling the text texture
+    // Scale the distorted UV for sampling the text texture, with H-sync loss
     // This is where content_scale affects things - it moves where we sample
     // The texture sampler uses ClampToEdge, so out-of-bounds samples get edge pixels
-    let sample_uv = scale_for_sampling(distorted_uv);
+    let scaled_uv = scale_for_sampling(distorted_uv);
+    let sample_uv = apply_hsync_loss(scaled_uv, uniforms.hsync_intensity, uniforms.screen_size.y);
 
     // Sample the input texture with bicubic filtering for sharper text
     // The screen shape is defined ONLY by the barrel distortion edge above
@@ -672,6 +774,9 @@ fn apply_bezel_mode_crt(screen_uv: vec2<f32>) -> vec4<f32> {
 
     // Apply brightness
     color = color * uniforms.brightness;
+
+    // Apply degauss effect
+    color = apply_degauss(color, distorted_uv, uniforms.degauss_progress);
 
     // Apply AA edge fade (based on fixed screen shape)
     color = color * edge_alpha;
@@ -757,11 +862,12 @@ fn apply_pane_bezel_crt(screen_uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
-    // Scale the distorted UV for sampling - this is where content_scale takes effect
+    // Scale the distorted UV for sampling, with H-sync loss - this is where content_scale takes effect
     let scaled_local = scale_for_sampling(distorted_local);
+    let hsync_local = apply_hsync_loss(scaled_local, uniforms.hsync_intensity, pane_size.y);
 
     // Convert back to global UV for sampling the texture
-    let sample_uv = local_to_global_uv(scaled_local, pane_idx);
+    let sample_uv = local_to_global_uv(hsync_local, pane_idx);
 
     // Sample the input texture with bicubic filtering for sharper text
     // The screen shape is defined ONLY by the barrel distortion edge above
@@ -793,8 +899,14 @@ fn apply_pane_bezel_crt(screen_uv: vec2<f32>, pane_idx: i32) -> vec4<f32> {
     let vignette = 1.0 - dot(vignette_uv, vignette_uv) * uniforms.vignette;
     color = color * vignette;
 
-    // Apply brightness and edge fade
-    color = color * uniforms.brightness * edge_alpha;
+    // Apply brightness
+    color = color * uniforms.brightness;
+
+    // Apply degauss effect (use local UV for per-pane)
+    color = apply_degauss(color, distorted_local, uniforms.degauss_progress);
+
+    // Apply edge fade
+    color = color * edge_alpha;
 
     return vec4<f32>(color, 1.0);
 }

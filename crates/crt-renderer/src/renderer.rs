@@ -61,6 +61,9 @@ pub struct EffectParams {
     pub beam_speed_divisor: u32, // How many frames per beam slice (e.g., 4 for 240Hz -> 60 fields/sec)
     pub beam_paused: bool,       // Freeze beam position for debugging
     pub beam_step_count: u32,    // Advance N frames when paused (0 = no step)
+    // Easter egg effects
+    pub degauss_progress: f32, // 0.0 = inactive, 0.0-1.0 = animation progress
+    pub hsync_intensity: f32,  // 0.0 = off, ~1.0 = full horizontal sync loss
 }
 
 /// Per-frame rendering statistics
@@ -461,6 +464,8 @@ impl Renderer {
             1.0,                  // default content scale x
             1.0,                  // default content scale y
             [1.0, 0.7, 0.0, 1.0], // default amber glow
+            0.0,                  // no degauss
+            0.0,                  // no hsync loss
         );
 
         let output = self.gpu.surface.get_current_texture()?;
@@ -788,6 +793,8 @@ impl Renderer {
             effects.content_scale_x,
             effects.content_scale_y,
             effects.glow_color,
+            effects.degauss_progress,
+            effects.hsync_intensity,
         );
 
         // Update burn-in uniforms

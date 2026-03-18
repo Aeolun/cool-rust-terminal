@@ -4,7 +4,7 @@
 mod config_ui;
 mod search_ui;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -486,6 +486,17 @@ struct App {
     hotkey_manager: Option<global_hotkey::GlobalHotKeyManager>,
     /// Currently registered global hotkey ID (for unregistering)
     registered_hotkey: Option<global_hotkey::hotkey::HotKey>,
+    /// Degauss animation start time (None = not active)
+    degauss_start: Option<Instant>,
+    /// Horizontal sync loss toggle (broken H-HOLD knob)
+    hsync_lost: bool,
+    /// rm -rf glitch trigger time per pane (None = not active)
+    /// bool = true means "rm -rf /" was matched (permanent glitch)
+    rmrf_glitch_start: HashMap<PaneId, (Instant, bool)>,
+    /// Which panes had rm -rf detected in the previous frame (for edge detection)
+    rmrf_was_detected: HashSet<PaneId>,
+    /// Panes currently showing "sudo" on screen (rainbow effect while visible)
+    sudo_active_panes: HashSet<PaneId>,
 }
 
 struct PasteDialog {
@@ -547,6 +558,11 @@ impl App {
             last_font_settings: None,
             hotkey_manager: None,
             registered_hotkey: None,
+            degauss_start: None,
+            hsync_lost: false,
+            rmrf_glitch_start: HashMap::new(),
+            rmrf_was_detected: HashSet::new(),
+            sudo_active_panes: HashSet::new(),
         }
     }
 
@@ -1398,7 +1414,9 @@ impl App {
             }
         }
 
-        let mut pane_renders: Vec<(PaneId, f32, f32, Vec<Vec<RenderCell>>)> = Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut pane_renders: Vec<(PaneId, f32, f32, Vec<Vec<RenderCell>>, Option<usize>)> =
+            Vec::new();
 
         let _grid_span = tracing::trace_span!("read_terminal_grids").entered();
         for pane_id in self.layout.panes() {
@@ -1575,9 +1593,222 @@ impl App {
                 rows
             });
 
-            pane_renders.push((*pane_id, x_offset, y_offset, cells));
+            // Compute cursor's rendered row index for easter egg detection
+            let cursor_row = cursor_pos.map(|(_col, line)| {
+                let display_offset = terminal.display_offset();
+                line + display_offset
+            });
+
+            pane_renders.push((*pane_id, x_offset, y_offset, cells, cursor_row));
         }
         drop(_grid_span);
+
+        // Easter egg: scan visible terminal content for "rm -rf" and trigger per-pane glitch
+        // Only matches when all chars in the pattern share the same fg color (ignores
+        // autocomplete ghost text which is typically rendered in a different/dimmer color)
+        // "rm -rf /" triggers permanent corruption; plain "rm -rf" is a brief burst
+        {
+            let mut currently_detected = HashSet::new();
+            for (pane_id, _x, _y, cells, _cursor) in &pane_renders {
+                let mut found = false;
+                let mut found_slash = false;
+                for row in cells {
+                    let line: String = row.iter().map(|c| c.c).collect();
+                    // Check each possible match position
+                    for pattern in &["rm -rf", "rm  -rf"] {
+                        let mut search_from = 0;
+                        while let Some(pos) = line[search_from..].find(pattern) {
+                            let start = search_from + pos;
+                            let end = start + pattern.len();
+                            // Verify all cells in the match have the same fg color
+                            if end <= row.len() {
+                                let ref_fg = row[start].fg;
+                                let uniform_style = (start..end).all(|i| {
+                                    let fg = row[i].fg;
+                                    (fg[0] - ref_fg[0]).abs() < 0.01
+                                        && (fg[1] - ref_fg[1]).abs() < 0.01
+                                        && (fg[2] - ref_fg[2]).abs() < 0.01
+                                });
+                                if uniform_style {
+                                    found = true;
+                                    // Check if followed by " /" (with same fg color)
+                                    let slash_patterns = [" /", "  /"];
+                                    for sp in &slash_patterns {
+                                        let slash_end = end + sp.len();
+                                        if slash_end <= row.len() && line[end..].starts_with(sp) {
+                                            let slash_uniform = (end..slash_end).all(|i| {
+                                                let fg = row[i].fg;
+                                                (fg[0] - ref_fg[0]).abs() < 0.01
+                                                    && (fg[1] - ref_fg[1]).abs() < 0.01
+                                                    && (fg[2] - ref_fg[2]).abs() < 0.01
+                                            });
+                                            if slash_uniform {
+                                                found_slash = true;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                            search_from = start + 1;
+                        }
+                        if found {
+                            break;
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                if found {
+                    currently_detected.insert(*pane_id);
+                    // Trigger on rising edge (first frame this pane shows rm -rf)
+                    if !self.rmrf_was_detected.contains(pane_id) {
+                        self.rmrf_glitch_start
+                            .insert(*pane_id, (Instant::now(), found_slash));
+                    } else if found_slash {
+                        // Upgrade existing glitch to permanent if "/" just appeared
+                        if let Some(entry) = self.rmrf_glitch_start.get_mut(pane_id) {
+                            if !entry.1 {
+                                entry.1 = true;
+                                entry.0 = Instant::now(); // Reset to full intensity
+                            }
+                        }
+                    }
+                }
+            }
+            self.rmrf_was_detected = currently_detected;
+        }
+
+        // Easter egg: detect "sudo" on screen — rainbow power surge while visible
+        // Uses same uniform-fg-color check to ignore autocomplete suggestions
+        {
+            let mut sudo_panes = HashSet::new();
+            for (pane_id, _x, _y, cells, cursor_row) in &pane_renders {
+                // Only check the cursor line (active prompt), not scrollback history
+                let Some(crow) = cursor_row else {
+                    continue;
+                };
+                if *crow >= cells.len() {
+                    continue;
+                }
+                let row = &cells[*crow];
+                let line: String = row.iter().map(|c| c.c).collect();
+                let mut found = false;
+                let mut search_from = 0;
+                while let Some(pos) = line[search_from..].find("sudo") {
+                    let start = search_from + pos;
+                    let end = start + 4; // "sudo".len()
+                    if end <= row.len() {
+                        let ref_fg = row[start].fg;
+                        let uniform_style = (start..end).all(|i| {
+                            let fg = row[i].fg;
+                            (fg[0] - ref_fg[0]).abs() < 0.01
+                                && (fg[1] - ref_fg[1]).abs() < 0.01
+                                && (fg[2] - ref_fg[2]).abs() < 0.01
+                        });
+                        if uniform_style {
+                            found = true;
+                            break;
+                        }
+                    }
+                    search_from = start + 1;
+                }
+                if found {
+                    sudo_panes.insert(*pane_id);
+                }
+            }
+            self.sudo_active_panes = sudo_panes;
+        }
+
+        // Apply per-pane rm -rf glitch: corrupt cell colors with static noise
+        const RMRF_GLITCH_DURATION: f32 = 0.5;
+        {
+            let mut expired = Vec::new();
+            for (pane_id, (start, permanent)) in &self.rmrf_glitch_start {
+                let elapsed = start.elapsed().as_secs_f32();
+                if !permanent && elapsed >= RMRF_GLITCH_DURATION {
+                    expired.push(*pane_id);
+                    continue;
+                }
+                // Permanent: full intensity forever. Brief: sharp attack, exponential decay
+                let intensity = if *permanent {
+                    1.0
+                } else {
+                    (1.0 - elapsed / RMRF_GLITCH_DURATION).powi(2)
+                };
+
+                // Find and corrupt this pane's cells
+                for (render_pane_id, _x, _y, cells, _cursor) in &mut pane_renders {
+                    if render_pane_id != pane_id {
+                        continue;
+                    }
+                    // Use a simple hash to pseudo-randomly corrupt cells
+                    let frame_seed = (elapsed * 1000.0) as u32;
+                    for (row_idx, row) in cells.iter_mut().enumerate() {
+                        for (col_idx, cell) in row.iter_mut().enumerate() {
+                            // Hash the position + frame to decide if this cell gets glitched
+                            let hash = (row_idx as u32)
+                                .wrapping_mul(374761393)
+                                .wrapping_add(col_idx as u32)
+                                .wrapping_mul(668265263)
+                                .wrapping_add(frame_seed.wrapping_mul(1013904223));
+                            let rand = (hash >> 16) as f32 / 65535.0;
+
+                            // Probability of corruption decreases with intensity
+                            if rand < intensity * 0.3 {
+                                // Randomly brighten fg or add static-white to bg
+                                let noise = ((hash >> 8) & 0xFF) as f32 / 255.0;
+                                cell.fg = [noise, noise, noise, 1.0];
+                                if noise > 0.5 {
+                                    cell.bg = [noise * 0.3, noise * 0.3, noise * 0.3, 1.0];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for pane_id in expired {
+                self.rmrf_glitch_start.remove(&pane_id);
+            }
+        }
+
+        // Apply per-pane sudo power surge: rainbow-cycle all text colors
+        if !self.sudo_active_panes.is_empty() {
+            let time = self.app_start.elapsed().as_secs_f32();
+            for (pane_id, _x, _y, cells, _cursor) in &mut pane_renders {
+                if !self.sudo_active_panes.contains(pane_id) {
+                    continue;
+                }
+                for (row_idx, row) in cells.iter_mut().enumerate() {
+                    for (col_idx, cell) in row.iter_mut().enumerate() {
+                        if cell.c == ' ' || cell.c == '\0' {
+                            continue;
+                        }
+                        // Per-cell hue offset based on position + time for a rolling rainbow
+                        let hue = time * 3.0 + row_idx as f32 * 0.15 + col_idx as f32 * 0.08;
+                        // HSV to RGB (saturation=0.7, value=brightness from original)
+                        let brightness = cell.fg[0].max(cell.fg[1]).max(cell.fg[2]);
+                        let brightness = brightness.max(0.6); // Ensure minimum brightness
+                        let h = (hue % 1.0 + 1.0) % 1.0 * 6.0;
+                        let f = h - h.floor();
+                        let s = 0.7_f32;
+                        let p = brightness * (1.0 - s);
+                        let q = brightness * (1.0 - s * f);
+                        let t = brightness * (1.0 - s * (1.0 - f));
+                        let (r, g, b) = match h.floor() as i32 % 6 {
+                            0 => (brightness, t, p),
+                            1 => (q, brightness, p),
+                            2 => (p, brightness, t),
+                            3 => (p, q, brightness),
+                            4 => (t, p, brightness),
+                            _ => (brightness, p, q),
+                        };
+                        cell.fg = [r, g, b, cell.fg[3]];
+                    }
+                }
+            }
+        }
 
         // Calculate separators from pane boundaries
         // Format: (x, y, length, is_vertical)
@@ -1651,9 +1882,9 @@ impl App {
 
         // Convert to the format render_panes expects
         if let Some(dialog) = &self.paste_dialog {
-            if let Some((_, _, _, cells)) = pane_renders
+            if let Some((_, _, _, cells, _)) = pane_renders
                 .iter_mut()
-                .find(|(pane_id, _, _, _)| *pane_id == dialog.pane_id)
+                .find(|(pane_id, _, _, _, _)| *pane_id == dialog.pane_id)
             {
                 Self::overlay_paste_dialog(cells, dialog, &color_scheme);
             }
@@ -1661,9 +1892,9 @@ impl App {
 
         // Overlay search bar on focused pane
         if self.search_ui.visible {
-            if let Some((_, _, _, cells)) = pane_renders
+            if let Some((_, _, _, cells, _)) = pane_renders
                 .iter_mut()
-                .find(|(pane_id, _, _, _)| *pane_id == focused_pane)
+                .find(|(pane_id, _, _, _, _)| *pane_id == focused_pane)
             {
                 SearchUI::overlay_search_bar(cells, &self.search_ui, &color_scheme);
             }
@@ -1671,7 +1902,7 @@ impl App {
 
         let panes: Vec<(f32, f32, &[Vec<RenderCell>])> = pane_renders
             .iter()
-            .map(|(_, x, y, cells)| (*x, *y, cells.as_slice()))
+            .map(|(_, x, y, cells, _)| (*x, *y, cells.as_slice()))
             .collect();
 
         // Calculate focus rectangle (only show when multiple panes)
@@ -2044,6 +2275,8 @@ impl App {
                 beam_speed_divisor: 0,
                 beam_paused: false,
                 beam_step_count: 0,
+                degauss_progress: 0.0,
+                hsync_intensity: 0.0,
             };
 
             // Use per_pane_crt from config UI so user can preview glow while adjusting
@@ -2067,6 +2300,21 @@ impl App {
         } else {
             // Ensure we're using the saved config's font (in case preview changed it)
             let fg = self.config.color_scheme.foreground;
+
+            // Calculate degauss animation progress (0.8 second animation)
+            const DEGAUSS_DURATION: f32 = 0.8;
+            let degauss_progress = if let Some(start) = self.degauss_start {
+                let elapsed = start.elapsed().as_secs_f32();
+                if elapsed >= DEGAUSS_DURATION {
+                    self.degauss_start = None;
+                    0.0
+                } else {
+                    elapsed / DEGAUSS_DURATION
+                }
+            } else {
+                0.0
+            };
+
             let effects = EffectParams {
                 curvature: self.config.effects.screen_curvature,
                 scanline_intensity: self.config.effects.scanline_intensity,
@@ -2110,6 +2358,8 @@ impl App {
                         0
                     }
                 },
+                degauss_progress,
+                hsync_intensity: if self.hsync_lost { 1.0 } else { 0.0 },
             };
 
             // Build debug visualization lines - green rectangle around hovered cell
@@ -2996,6 +3246,18 @@ impl ApplicationHandler for App {
                         if let Some(renderer) = &mut self.renderer {
                             renderer.replay_power_on();
                         }
+                        return;
+                    }
+
+                    // Ctrl+Shift+D: Degauss CRT screen
+                    if ctrl && shift && event.logical_key == Key::Character("D".into()) {
+                        self.degauss_start = Some(Instant::now());
+                        return;
+                    }
+
+                    // Ctrl+Shift+H: Toggle horizontal sync loss (broken H-HOLD knob)
+                    if ctrl && shift && event.logical_key == Key::Character("H".into()) {
+                        self.hsync_lost = !self.hsync_lost;
                         return;
                     }
 

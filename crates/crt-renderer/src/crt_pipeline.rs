@@ -52,7 +52,12 @@ struct CrtUniforms {
     content_scale_y: f32,
     // Cell height for scanline alignment (one scanline per text row)
     cell_height: f32,
-    _pad1: f32, // Padding for vec4 alignment
+    // Easter egg effects
+    degauss_progress: f32, // 0.0 = inactive, 0.0-1.0 = animation progress
+    hsync_intensity: f32,  // 0.0 = off, ~1.0 = full horizontal sync loss
+    _pad1: f32,
+    _pad2: f32,
+    _pad3: f32,
     // Focus glow color (follows font color) - uses vec4 for alignment (w ignored)
     glow_color: [f32; 4],
     // Pane rects (max 16 panes)
@@ -148,7 +153,11 @@ impl CrtPipeline {
                 content_scale_x: 1.0,
                 content_scale_y: 1.0,
                 cell_height: 18.0, // Default font size
+                degauss_progress: 0.0,
+                hsync_intensity: 0.0,
                 _pad1: 0.0,
+                _pad2: 0.0,
+                _pad3: 0.0,
                 glow_color: [1.0, 0.7, 0.0, 1.0], // Default amber
                 panes: [PaneRect {
                     x: 0.0,
@@ -324,6 +333,8 @@ impl CrtPipeline {
         content_scale_x: f32,
         content_scale_y: f32,
         glow_color: [f32; 4],
+        degauss_progress: f32,
+        hsync_intensity: f32,
     ) {
         self.time += dt;
         // Wrap time to prevent float precision loss (keeps noise working)
@@ -373,7 +384,11 @@ impl CrtPipeline {
                 content_scale_x,
                 content_scale_y,
                 cell_height,
+                degauss_progress,
+                hsync_intensity,
                 _pad1: 0.0,
+                _pad2: 0.0,
+                _pad3: 0.0,
                 glow_color,
                 panes,
             }]),
