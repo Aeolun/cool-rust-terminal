@@ -19,3 +19,7 @@ Examples:
 - `feat: add dark mode support`
 - `fix: resolve crash on startup`
 - `ci: add GitHub Actions for releases`
+
+## Releases
+
+The version in `Cargo.toml` (`workspace.package.version`) must match the git tag before tagging a release. The CI release workflow builds with the Cargo version, so a mismatch will fail the build. Always bump `Cargo.toml` first, commit, then tag.
