@@ -1133,6 +1133,82 @@ impl App {
         }
     }
 
+    /// Dump every cell in the current selection (as a rectangle) to the clipboard
+    /// for debugging. Only useful while the debug grid is on — intended for
+    /// "what is actually on screen at this cell?" investigations.
+    fn copy_selection_debug(&mut self) {
+        let focused = self.layout.focused_pane();
+        let Some(terminal) = self.terminals.get(&focused) else {
+            return;
+        };
+
+        let (start, end) = self.selection.normalized();
+
+        let dump = terminal.with_grid(|grid| {
+            use alacritty_terminal::grid::Dimensions;
+            use alacritty_terminal::index::{Column, Line};
+            use alacritty_terminal::term::cell::Flags;
+
+            let cols = grid.columns();
+            let col_lo = start.col.min(cols.saturating_sub(1));
+            let col_hi = end.col.min(cols.saturating_sub(1));
+            let row_count = (end.row - start.row + 1).max(0) as usize;
+            let col_count = col_hi.saturating_sub(col_lo) + 1;
+
+            let mut out = String::new();
+            out.push_str(&format!(
+                "# crt debug cell dump\n# rows {}..={}  cols {}..={}  ({} rows x {} cols = {} cells)\n",
+                start.row,
+                end.row,
+                col_lo,
+                col_hi,
+                row_count,
+                col_count,
+                row_count * col_count,
+            ));
+            out.push_str("row\tcol\tchar\tcodepoint\tfg\tbg\tflags\twide\tzerowidth\n");
+
+            for row in start.row..=end.row {
+                let line = Line(row);
+                for col in col_lo..=col_hi {
+                    let cell = &grid[line][Column(col)];
+                    let c = cell.c;
+                    let char_repr = match c {
+                        '\0' => "NUL".to_string(),
+                        ' ' => "SP".to_string(),
+                        '\t' => "TAB".to_string(),
+                        _ if c.is_control() => format!("CTRL(\\x{:02x})", c as u32),
+                        _ => format!("{:?}", c),
+                    };
+                    let zw = cell
+                        .zerowidth()
+                        .map(|zs| {
+                            zs.iter()
+                                .map(|ch| format!("U+{:04X}", *ch as u32))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
+                        .unwrap_or_default();
+                    let wide = cell.flags.contains(Flags::WIDE_CHAR);
+                    out.push_str(&format!(
+                        "{}\t{}\t{}\tU+{:04X}\t{:?}\t{:?}\t{:?}\t{}\t{}\n",
+                        row, col, char_repr, c as u32, cell.fg, cell.bg, cell.flags, wide, zw
+                    ));
+                }
+            }
+            out
+        });
+
+        if let Some(clipboard) = &mut self.clipboard {
+            match clipboard.set_text(&dump) {
+                Ok(_) => {
+                    tracing::info!("Copied debug cell dump ({} bytes) to clipboard", dump.len())
+                }
+                Err(e) => tracing::error!("Failed to copy debug dump: {}", e),
+            }
+        }
+    }
+
     /// Check if the mouse is within proximity of any pane's scrollbar edge.
     /// Returns the PaneId if hovering near a scrollbar area.
     /// Coordinates are undistorted to account for barrel distortion.
@@ -3197,6 +3273,19 @@ impl ApplicationHandler for App {
                             self.beam_step_delay_ms,
                             1000.0 / self.beam_step_delay_ms as f32
                         );
+                        return;
+                    }
+
+                    // Ctrl+Shift+D: Copy debug cell dump for current selection
+                    // (only while debug grid is on — this is a diagnostic tool).
+                    if ctrl && shift && event.logical_key == Key::Character("D".into()) {
+                        if self.debug_grid {
+                            self.copy_selection_debug();
+                        } else {
+                            tracing::info!(
+                                "Ctrl+Shift+D ignored: enable debug grid (Ctrl+Shift+G) first"
+                            );
+                        }
                         return;
                     }
 
