@@ -573,7 +573,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crt-app"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "crt-core"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "dirs",
  "serde",
@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "crt-layout"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "crt-core",
  "thiserror 2.0.17",
@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "crt-renderer"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "bytemuck",
  "crt-core",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "crt-terminal"
-version = "0.3.1"
+version = "0.4.1"
 dependencies = [
  "alacritty_terminal",
  "crt-core",
