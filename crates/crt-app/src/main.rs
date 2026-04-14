@@ -1565,7 +1565,13 @@ impl App {
                             cell_bg
                         };
 
-                        let (fg, bg) = if is_cursor || is_selected {
+                        let (fg, bg) = if is_cursor {
+                            // Cursor uses fixed scheme colors rather than inverting
+                            // the cell. Inverting breaks when the running TUI already
+                            // drew its own cursor as an INVERSE cell (double-invert =
+                            // invisible cursor).
+                            (color_scheme.background, color_scheme.foreground)
+                        } else if is_selected {
                             // Invert: swap fg and bg
                             (resolved_bg, cell_fg)
                         } else if is_current_match {
