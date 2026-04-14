@@ -1716,11 +1716,23 @@ impl App {
                                 });
                                 if uniform_style {
                                     found = true;
-                                    // Check if followed by " /" (with same fg color)
+                                    // Check if followed by a bare " /" — i.e., the
+                                    // slash is the whole argument, not a path prefix
+                                    // like "/Users/...". Require the char after the
+                                    // slash to be whitespace, NUL, or end-of-line.
                                     let slash_patterns = [" /", "  /"];
                                     for sp in &slash_patterns {
                                         let slash_end = end + sp.len();
                                         if slash_end <= row.len() && line[end..].starts_with(sp) {
+                                            let after_is_terminator = row
+                                                .get(slash_end)
+                                                .map(|cell| {
+                                                    cell.c == '\0' || cell.c.is_whitespace()
+                                                })
+                                                .unwrap_or(true);
+                                            if !after_is_terminator {
+                                                continue;
+                                            }
                                             let slash_uniform = (end..slash_end).all(|i| {
                                                 let fg = row[i].fg;
                                                 (fg[0] - ref_fg[0]).abs() < 0.01
