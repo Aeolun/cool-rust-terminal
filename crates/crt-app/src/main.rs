@@ -486,6 +486,8 @@ struct App {
     hotkey_manager: Option<global_hotkey::GlobalHotKeyManager>,
     /// Currently registered global hotkey ID (for unregistering)
     registered_hotkey: Option<global_hotkey::hotkey::HotKey>,
+    /// Whether the window was hidden via the global hotkey (for dock click re-show)
+    hidden_by_hotkey: bool,
     /// Degauss animation start time (None = not active)
     degauss_start: Option<Instant>,
     /// Horizontal sync loss toggle (broken H-HOLD knob)
@@ -558,6 +560,7 @@ impl App {
             last_font_settings: None,
             hotkey_manager: None,
             registered_hotkey: None,
+            hidden_by_hotkey: false,
             degauss_start: None,
             hsync_lost: false,
             rmrf_glitch_start: HashMap::new(),
@@ -2627,7 +2630,7 @@ impl App {
     }
 
     /// Check for global hotkey events and focus the window if triggered
-    fn poll_global_hotkey(&self) {
+    fn poll_global_hotkey(&mut self) {
         if self.registered_hotkey.is_none() {
             return;
         }
@@ -2636,13 +2639,15 @@ impl App {
                 return;
             }
             if let Some(window) = &self.window {
-                if window.has_focus() {
-                    window.set_visible(false);
-                    tracing::info!("Global hotkey triggered: hiding window");
-                } else {
+                if self.hidden_by_hotkey {
                     window.set_visible(true);
                     window.focus_window();
+                    self.hidden_by_hotkey = false;
                     tracing::info!("Global hotkey triggered: showing window");
+                } else {
+                    window.set_visible(false);
+                    self.hidden_by_hotkey = true;
+                    tracing::info!("Global hotkey triggered: hiding window");
                 }
             }
         }
@@ -2952,6 +2957,16 @@ impl ApplicationHandler for App {
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
+            }
+            WindowEvent::Focused(true) => {
+                // Re-show window when activated (e.g. dock click) after hiding via hotkey
+                if self.hidden_by_hotkey {
+                    if let Some(window) = &self.window {
+                        window.set_visible(true);
+                    }
+                    self.hidden_by_hotkey = false;
+                    tracing::info!("Window re-shown via focus (was hidden by hotkey)");
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
