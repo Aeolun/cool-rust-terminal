@@ -56,19 +56,27 @@ impl GpuState {
         // Log available present modes for debugging
         tracing::info!("Available present modes: {:?}", surface_caps.present_modes);
 
-        // Prefer Mailbox for high refresh rate displays (no frame limiting, triple-buffered)
-        // Fall back to Fifo (standard vsync) if Mailbox isn't available
+        // Prefer non-blocking present modes for lowest input latency.
+        // Mailbox: triple-buffered, non-blocking, no tearing.
+        // Immediate: non-blocking, theoretically tears but macOS compositor prevents it.
+        // Fifo: vsync but blocks the event loop thread during present(), causing input stutter.
         let present_mode = if surface_caps
             .present_modes
             .contains(&wgpu::PresentMode::Mailbox)
         {
-            tracing::info!("Using Mailbox present mode (uncapped framerate)");
+            tracing::info!("Using Mailbox present mode (non-blocking, no tearing)");
             wgpu::PresentMode::Mailbox
+        } else if surface_caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Immediate)
+        {
+            tracing::info!("Using Immediate present mode (non-blocking)");
+            wgpu::PresentMode::Immediate
         } else if surface_caps
             .present_modes
             .contains(&wgpu::PresentMode::Fifo)
         {
-            tracing::info!("Using Fifo present mode (vsync)");
+            tracing::info!("Using Fifo present mode (vsync, blocking)");
             wgpu::PresentMode::Fifo
         } else {
             tracing::info!("Using AutoVsync present mode (fallback)");
@@ -83,7 +91,7 @@ impl GpuState {
             present_mode,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
         };
         surface.configure(&device, &config);
 

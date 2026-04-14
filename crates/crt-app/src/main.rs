@@ -2945,13 +2945,13 @@ impl ApplicationHandler for App {
                     self.render_time_samples[self.render_time_idx] = render_time;
                     self.render_time_idx =
                         (self.render_time_idx + 1) % self.render_time_samples.len();
-                } else {
-                    // Sleep for remaining time to avoid busy-waiting
-                    let _sleep_span = tracing::trace_span!("frame_sleep").entered();
-                    std::thread::sleep(self.frame_duration - elapsed);
                 }
 
+                // Schedule next frame via WaitUntil instead of blocking sleep
                 if let Some(window) = &self.window {
+                    let next_frame = self.last_frame + self.frame_duration;
+                    event_loop
+                        .set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_frame));
                     window.request_redraw();
                 }
             }
@@ -3870,6 +3870,11 @@ impl ApplicationHandler for App {
                             // Auto-scroll to bottom when typing
                             terminal.scroll_to_bottom();
                             terminal.input(bytes);
+
+                            // Trigger immediate redraw for lowest input latency
+                            if let Some(window) = &self.window {
+                                window.request_redraw();
+                            }
                         }
                     }
                 } else if event.state == ElementState::Released {
