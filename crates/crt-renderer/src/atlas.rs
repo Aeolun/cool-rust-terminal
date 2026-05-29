@@ -38,11 +38,11 @@ pub struct GlyphAtlas {
     dirty: bool,
 }
 
-/// BDF font used as fallback, with its native cell dimensions for scaling
+/// BDF font used as fallback for comprehensive Unicode coverage. Glyphs are
+/// cropped to their ink and fit to the primary cell at render time, so the
+/// source font's own cell dimensions aren't needed here.
 struct BdfFallback {
     font: BdfFont,
-    cell_width: u32,
-    cell_height: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +65,21 @@ pub enum AtlasError {
 
     #[error("Atlas is full")]
     AtlasFull,
+}
+
+/// Measure a font's cap height in pixels at the given px size, using the bounding
+/// box of a reference capital glyph. Returns `None` if the font contains none of
+/// the reference glyphs (e.g. a pure-symbol or emoji font with no Latin capitals).
+fn measure_cap_height_px(font: &Font, px: f32) -> Option<f32> {
+    for ch in ['H', 'X', 'I', 'E', 'M'] {
+        if font.lookup_glyph_index(ch) != 0 {
+            let m = font.metrics(ch, px);
+            if m.height > 0 {
+                return Some(m.height as f32);
+            }
+        }
+    }
+    None
 }
 
 impl GlyphAtlas {
@@ -172,29 +187,46 @@ impl GlyphAtlas {
         }
     }
 
+    /// The primary font's cap height in pixels (visual height of capital letters).
+    /// Used as the target size for fallback fonts so their glyphs render at the
+    /// same visual scale as the primary font's capitals.
+    fn primary_cap_height(&self) -> f32 {
+        match &self.source {
+            FontSource::Ttf { font, font_size } => {
+                measure_cap_height_px(font, *font_size).unwrap_or(*font_size * 0.7)
+            }
+            // BDF has no notion of cap height; approximate as ~70% of the cell.
+            FontSource::Bdf { .. } => self.cell_height * 0.7,
+        }
+    }
+
+    /// Choose the rasterization px size for a fallback TTF so its glyphs render
+    /// at the same visual size as the primary font's capitals.
+    ///
+    /// We match cap height (measured from a reference capital) rather than the
+    /// font's ascent-to-descent span. Symbol/emoji fonts reserve large vertical
+    /// metrics for tall glyphs, so the old `cell_height / (ascent - descent)`
+    /// heuristic shrank ordinary marks like `✗` into thin, aliased smudges.
+    /// When the font has no Latin capital to measure (typical for pure symbol or
+    /// emoji fonts), fall back to matching the em square (`base_size`).
+    fn fallback_px_size(&self, font: &Font) -> f32 {
+        let base_size = self.primary_font_size();
+        match measure_cap_height_px(font, base_size) {
+            Some(fallback_cap) if fallback_cap > 0.0 => {
+                base_size * (self.primary_cap_height() / fallback_cap)
+            }
+            _ => base_size,
+        }
+    }
+
     /// Set a fallback font for characters missing from the primary font.
     /// The fallback font size is calculated to match the primary font's cell height.
     pub fn set_fallback(&mut self, fallback_data: &[u8]) -> Result<(), AtlasError> {
         let fallback = Font::from_bytes(fallback_data, FontSettings::default())
             .map_err(|e| AtlasError::FontLoadError(format!("fallback: {}", e)))?;
 
-        let base_size = self.primary_font_size();
-
-        // Calculate font size for fallback to match primary cell height
-        let fallback_line_metrics =
-            fallback
-                .horizontal_line_metrics(base_size)
-                .unwrap_or(fontdue::LineMetrics {
-                    ascent: base_size * 0.8,
-                    descent: base_size * -0.2,
-                    line_gap: 0.0,
-                    new_line_size: base_size,
-                });
-
-        // Scale fallback to match primary cell height
-        let fallback_natural_height = fallback_line_metrics.ascent - fallback_line_metrics.descent;
-        let scale = self.cell_height / fallback_natural_height;
-        let fallback_font_size = base_size * scale;
+        // Size the fallback so its capitals match the primary font's cap height.
+        let fallback_font_size = self.fallback_px_size(&fallback);
 
         self.fallback_font = Some(fallback);
         self.fallback_font_size = fallback_font_size;
@@ -214,22 +246,9 @@ impl GlyphAtlas {
         let symbols = Font::from_bytes(symbols_data, FontSettings::default())
             .map_err(|e| AtlasError::FontLoadError(format!("symbols: {}", e)))?;
 
-        let base_size = self.primary_font_size();
-
-        // Calculate font size for symbols to match primary cell height
-        let symbols_line_metrics =
-            symbols
-                .horizontal_line_metrics(base_size)
-                .unwrap_or(fontdue::LineMetrics {
-                    ascent: base_size * 0.8,
-                    descent: base_size * -0.2,
-                    line_gap: 0.0,
-                    new_line_size: base_size,
-                });
-
-        let symbols_natural_height = symbols_line_metrics.ascent - symbols_line_metrics.descent;
-        let scale = self.cell_height / symbols_natural_height;
-        let symbols_font_size = base_size * scale;
+        // Size symbols so they match the primary font's cap height. Symbol fonts
+        // have no Latin capitals, so this matches the em square instead.
+        let symbols_font_size = self.fallback_px_size(&symbols);
 
         self.symbols_font = Some(symbols);
         self.symbols_font_size = symbols_font_size;
@@ -247,22 +266,9 @@ impl GlyphAtlas {
         let emoji = Font::from_bytes(emoji_data, FontSettings::default())
             .map_err(|e| AtlasError::FontLoadError(format!("emoji: {}", e)))?;
 
-        let base_size = self.primary_font_size();
-
-        // Calculate font size for emoji to match primary cell height
-        let emoji_line_metrics =
-            emoji
-                .horizontal_line_metrics(base_size)
-                .unwrap_or(fontdue::LineMetrics {
-                    ascent: base_size * 0.8,
-                    descent: base_size * -0.2,
-                    line_gap: 0.0,
-                    new_line_size: base_size,
-                });
-
-        let emoji_natural_height = emoji_line_metrics.ascent - emoji_line_metrics.descent;
-        let scale = self.cell_height / emoji_natural_height;
-        let emoji_font_size = base_size * scale;
+        // Size emoji to match the primary font's cap height. Emoji fonts have no
+        // Latin capitals, so this matches the em square instead.
+        let emoji_font_size = self.fallback_px_size(&emoji);
 
         self.emoji_font = Some(emoji);
         self.emoji_font_size = emoji_font_size;
@@ -276,28 +282,21 @@ impl GlyphAtlas {
     }
 
     /// Set a BDF fallback font for comprehensive Unicode coverage.
-    /// The font will be scaled to match the primary font's cell dimensions.
+    /// Glyphs are cropped to their ink and fit to the primary cell at render time.
     pub fn set_bdf_fallback(&mut self, bdf_data: &[u8]) -> Result<(), AtlasError> {
         let font = BdfFont::parse(bdf_data)
             .map_err(|e| AtlasError::FontLoadError(format!("bdf fallback: {}", e)))?;
 
-        let cell_width = font.cell_width();
-        let cell_height = font.cell_height();
-
         tracing::info!(
-            "BDF fallback font configured: {}x{} cell, {} glyphs (scaling to {:.0}x{:.0})",
-            cell_width,
-            cell_height,
+            "BDF fallback font configured: {}x{} source cell, {} glyphs (fitting to {:.0}x{:.0})",
+            font.cell_width(),
+            font.cell_height(),
             font.glyphs.len(),
             self.cell_width,
             self.cell_height
         );
 
-        self.bdf_fallback = Some(BdfFallback {
-            font,
-            cell_width,
-            cell_height,
-        });
+        self.bdf_fallback = Some(BdfFallback { font });
 
         Ok(())
     }
@@ -630,9 +629,15 @@ impl GlyphAtlas {
         Ok(info)
     }
 
-    /// Render a glyph from the BDF fallback font, scaling to match primary cell size.
-    /// For wide characters (CJK, etc.), scales to 2x cell width.
+    /// Render a glyph from the BDF fallback font, fitting it to the primary cell.
+    /// For wide characters (CJK, etc.), the target is 2x cell width.
     /// Returns (width, height, xmin, ymin, advance, bitmap, source_name).
+    ///
+    /// The glyph is cropped to its visible ink first, then scaled to fit the cell
+    /// preserving aspect ratio, then centered. Cropping is what removes the source
+    /// font's padding: Unifont stores glyphs in an oversized (e.g. 16x16) cell,
+    /// and scaling that whole cell left half-width marks like `✓` jammed against
+    /// one side with a lopsided gap. Fitting the cropped ink uses the cell evenly.
     fn render_bdf_fallback_glyph(
         &self,
         c: char,
@@ -642,33 +647,48 @@ impl GlyphAtlas {
         let fb = self.bdf_fallback.as_ref().unwrap();
         let glyph = fb.font.get_char(c).unwrap();
 
-        // Wide chars (CJK, etc.) render at 2x cell width
+        // Target cell the glyph should occupy (wide chars span two cells).
         let target_width = if is_wide {
-            (self.cell_width * 2.0) as u32
-        } else {
-            self.cell_width as u32
-        };
-
-        let scaled = glyph.render_scaled(
-            target_width,
-            self.cell_height as u32,
-            fb.cell_width,
-            fb.cell_height,
-        );
-
-        let advance = if is_wide {
             self.cell_width * 2.0
         } else {
             self.cell_width
         };
+        let advance = target_width;
+
+        // Crop to the actual ink so the source font's padding doesn't eat space.
+        let Some(cropped) = glyph.render_cropped() else {
+            // No ink (e.g. space): nothing to draw.
+            return (0, 0, 0, 0, advance, vec![], source_name);
+        };
+
+        // Fit the ink into the cell preserving aspect ratio.
+        let fit = (target_width.max(1.0) / cropped.width as f32)
+            .min(self.cell_height.max(1.0) / cropped.height as f32);
+        let scaled_w = ((cropped.width as f32 * fit).round() as u32).max(1);
+        let scaled_h = ((cropped.height as f32 * fit).round() as u32).max(1);
+
+        let bitmap = crate::bdf::resample_area(
+            &cropped.pixels,
+            cropped.width,
+            cropped.height,
+            scaled_w,
+            scaled_h,
+        );
+
+        // Center horizontally within the cell.
+        let xmin = ((target_width - scaled_w as f32) / 2.0).round() as i32;
+        // Center vertically within the cell. The renderer places the glyph top at
+        // `baseline_y - height - ymin` and the cell top at `baseline_y - ascent`,
+        // so centering gives `ymin = ascent - (cell_height + scaled_h) / 2`.
+        let ymin = (self.ascent - (self.cell_height + scaled_h as f32) / 2.0).round() as i32;
 
         (
-            scaled.width as usize,
-            scaled.height as usize,
-            scaled.offset_x,
-            scaled.offset_y,
+            scaled_w as usize,
+            scaled_h as usize,
+            xmin,
+            ymin,
             advance,
-            scaled.bitmap,
+            bitmap,
             source_name,
         )
     }

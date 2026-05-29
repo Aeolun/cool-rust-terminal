@@ -357,8 +357,14 @@ impl TextPipeline {
             // offset_x is xmin (horizontal bearing)
             // offset_y is ymin - distance from baseline to bottom of glyph
             // In screen coords (Y down), glyph top is at baseline_y - (height + ymin)
-            let x0 = x + glyph.offset_x;
-            let y0 = baseline_y - glyph.height as f32 - glyph.offset_y;
+            //
+            // Snap the quad origin to whole pixels; glyph_size is already the
+            // bitmap's integer pixel dimensions, so the instance maps 1:1 onto the
+            // pixel grid and the Linear atlas sampler is a no-op instead of
+            // smearing each glyph across pixel boundaries (most visible on thin
+            // diagonal strokes like `✗`).
+            let x0 = (x + glyph.offset_x).round();
+            let y0 = (baseline_y - glyph.height as f32 - glyph.offset_y).round();
 
             instances.push(GlyphInstance {
                 glyph_pos: [x0, y0],

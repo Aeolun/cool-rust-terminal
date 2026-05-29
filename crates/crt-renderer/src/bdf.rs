@@ -295,9 +295,17 @@ impl BdfGlyph {
         pixels
     }
 
-    /// Render this glyph scaled to a target size using nearest-neighbor interpolation.
-    /// Returns (scaled_width, scaled_height, scaled_offset_x, scaled_offset_y, bitmap).
-    /// The offsets are scaled proportionally to maintain correct positioning.
+    /// Render this glyph scaled to a target size using an area-averaging (box)
+    /// filter. Returns (scaled_width, scaled_height, scaled_offset_x,
+    /// scaled_offset_y, bitmap). The offsets are scaled proportionally to
+    /// maintain correct positioning.
+    ///
+    /// Area averaging is essential when downscaling into small cells (e.g. fitting
+    /// 16px Unifont into a 7x14 BDF cell): each destination pixel integrates the
+    /// coverage of the source region it maps to, so thin 1px strokes survive as
+    /// partial-coverage gray pixels. Nearest-neighbor instead samples one source
+    /// pixel per destination and drops the rest, which made thin marks like `✓`
+    /// vanish entirely.
     pub fn render_scaled(
         &self,
         target_cell_width: u32,
@@ -347,21 +355,13 @@ impl BdfGlyph {
             };
         }
 
-        // Scale using nearest-neighbor
-        let mut scaled = vec![0u8; (scaled_width * scaled_height) as usize];
-
-        for dst_y in 0..scaled_height {
-            for dst_x in 0..scaled_width {
-                // Map destination pixel to source pixel
-                let src_x = ((dst_x as f32 / scale_x).floor() as u32).min(self.width - 1);
-                let src_y = ((dst_y as f32 / scale_y).floor() as u32).min(self.height - 1);
-
-                let src_idx = (src_y * self.width + src_x) as usize;
-                let dst_idx = (dst_y * scaled_width + dst_x) as usize;
-
-                scaled[dst_idx] = original[src_idx];
-            }
-        }
+        let scaled = resample_area(
+            &original,
+            self.width,
+            self.height,
+            scaled_width,
+            scaled_height,
+        );
 
         ScaledGlyph {
             width: scaled_width,
@@ -371,6 +371,62 @@ impl BdfGlyph {
             dwidth_x: scaled_dwidth_x,
             bitmap: scaled,
         }
+    }
+
+    /// Render the glyph and crop it to the tight bounding box of its lit (ink)
+    /// pixels. Returns `(ink_width, ink_height, pixels)` where `pixels` is a
+    /// row-major `ink_width * ink_height` grayscale buffer, or `None` if the
+    /// glyph has no ink (e.g. space).
+    ///
+    /// Many bitmap fonts (notably Unifont) place glyphs in an oversized cell with
+    /// blank padding around the ink. Cropping to the real ink before scaling lets
+    /// callers fit the visible mark to the target cell instead of wasting space on
+    /// the source font's padding (which otherwise shows up as a lopsided gap).
+    pub fn render_cropped(&self) -> Option<CroppedGlyph> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+
+        let pixels = self.render();
+        let w = self.width as usize;
+        let h = self.height as usize;
+
+        let mut min_x = w;
+        let mut min_y = h;
+        let mut max_x = 0usize;
+        let mut max_y = 0usize;
+        let mut found = false;
+
+        for y in 0..h {
+            for x in 0..w {
+                if pixels[y * w + x] > 0 {
+                    found = true;
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+
+        if !found {
+            return None;
+        }
+
+        let ink_w = max_x - min_x + 1;
+        let ink_h = max_y - min_y + 1;
+        let mut cropped = vec![0u8; ink_w * ink_h];
+        for y in 0..ink_h {
+            for x in 0..ink_w {
+                cropped[y * ink_w + x] = pixels[(min_y + y) * w + (min_x + x)];
+            }
+        }
+
+        Some(CroppedGlyph {
+            width: ink_w as u32,
+            height: ink_h as u32,
+            pixels: cropped,
+        })
     }
 }
 
@@ -383,6 +439,74 @@ pub struct ScaledGlyph {
     pub offset_y: i32,
     pub dwidth_x: i32,
     pub bitmap: Vec<u8>,
+}
+
+/// A glyph rendered and cropped to the tight bounding box of its ink pixels.
+#[derive(Debug, Clone)]
+pub struct CroppedGlyph {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+/// Resample a grayscale bitmap from `(src_w, src_h)` to `(dst_w, dst_h)` using an
+/// area-averaging (box) filter.
+///
+/// Each destination pixel covers a `[x0, x1) x [y0, y1)` footprint in source
+/// space; we accumulate each overlapped source pixel weighted by the overlap
+/// area, then normalize. This preserves thin strokes as partial-coverage gray
+/// when downscaling (nearest-neighbor would drop them) and degenerates to clean
+/// block replication for integer upscales.
+pub fn resample_area(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+    let mut dst = vec![0u8; (dst_w * dst_h) as usize];
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return dst;
+    }
+
+    // Source pixels per destination pixel along each axis.
+    let inv_scale_x = src_w as f32 / dst_w as f32;
+    let inv_scale_y = src_h as f32 / dst_h as f32;
+
+    for dy in 0..dst_h {
+        let sy0 = dy as f32 * inv_scale_y;
+        let sy1 = sy0 + inv_scale_y;
+        let iy0 = sy0.floor() as u32;
+        let iy1 = (sy1.ceil() as u32).min(src_h);
+
+        for dx in 0..dst_w {
+            let sx0 = dx as f32 * inv_scale_x;
+            let sx1 = sx0 + inv_scale_x;
+            let ix0 = sx0.floor() as u32;
+            let ix1 = (sx1.ceil() as u32).min(src_w);
+
+            let mut acc = 0.0f32;
+            let mut weight = 0.0f32;
+
+            for sy in iy0..iy1 {
+                let wy = ((sy + 1) as f32).min(sy1) - (sy as f32).max(sy0);
+                if wy <= 0.0 {
+                    continue;
+                }
+                for sx in ix0..ix1 {
+                    let wx = ((sx + 1) as f32).min(sx1) - (sx as f32).max(sx0);
+                    if wx <= 0.0 {
+                        continue;
+                    }
+                    let w = wx * wy;
+                    acc += src[(sy * src_w + sx) as usize] as f32 * w;
+                    weight += w;
+                }
+            }
+
+            dst[(dy * dst_w + dx) as usize] = if weight > 0.0 {
+                (acc / weight).round().clamp(0.0, 255.0) as u8
+            } else {
+                0
+            };
+        }
+    }
+
+    dst
 }
 
 #[cfg(test)]
@@ -510,5 +634,107 @@ ENDFONT
         assert_eq!(scaled.width, 6);
         assert_eq!(scaled.height, 13);
         assert_eq!(scaled.bitmap, original);
+    }
+
+    /// Cropping must strip blank padding down to the tight ink box, matching the
+    /// padding Unifont bakes around glyphs like `✓`.
+    #[test]
+    fn test_render_cropped_strips_padding() {
+        // 8x16 glyph with ink only in columns 2..=5 and rows 4..=11.
+        let mut bitmap = Vec::with_capacity(16);
+        for row in 0..16usize {
+            let mut bytes = [0u8; 1]; // 8 bits => 1 byte
+            if (4..=11).contains(&row) {
+                // Set columns 2..=5: bits 0x20|0x10|0x08|0x04 = 0x3C
+                bytes[0] = 0x3C;
+            }
+            bitmap.push(bytes.to_vec());
+        }
+
+        let glyph = BdfGlyph {
+            encoding: 0x2713,
+            name: "padded".to_string(),
+            dwidth_x: 8,
+            width: 8,
+            height: 16,
+            offset_x: 0,
+            offset_y: 0,
+            bitmap,
+        };
+
+        let cropped = glyph.render_cropped().expect("glyph has ink");
+        assert_eq!(cropped.width, 4, "columns 2..=5 => width 4");
+        assert_eq!(cropped.height, 8, "rows 4..=11 => height 8");
+        assert!(cropped.pixels.iter().all(|&v| v == 255));
+        assert_eq!(cropped.pixels.len(), 4 * 8);
+    }
+
+    /// A blank glyph (no ink) has no bounding box to crop to.
+    #[test]
+    fn test_render_cropped_blank_is_none() {
+        let glyph = BdfGlyph {
+            encoding: 32,
+            name: "space".to_string(),
+            dwidth_x: 8,
+            width: 8,
+            height: 16,
+            offset_x: 0,
+            offset_y: 0,
+            bitmap: vec![vec![0u8]; 16],
+        };
+        assert!(glyph.render_cropped().is_none());
+    }
+
+    /// A thin 1px diagonal stroke (like the `✓` in Unifont) must survive an
+    /// aggressive downscale into a small cell. Nearest-neighbor sampling used to
+    /// drop most of its columns, making the mark vanish; area averaging keeps the
+    /// ink as partial-coverage gray.
+    #[test]
+    fn test_render_scaled_thin_diagonal_survives_downscale() {
+        // 16x16 glyph with a single-pixel diagonal from top-left to bottom-right.
+        let mut bitmap = Vec::with_capacity(16);
+        for row in 0..16usize {
+            // Set the bit at column == row. Bitmap rows are left-aligned bytes,
+            // 16 bits => 2 bytes per row.
+            let mut bytes = [0u8; 2];
+            let col = row; // diagonal
+            bytes[col / 8] = 0x80 >> (col % 8);
+            bitmap.push(bytes.to_vec());
+        }
+
+        let glyph = BdfGlyph {
+            encoding: 0x2713,
+            name: "check".to_string(),
+            dwidth_x: 16,
+            width: 16,
+            height: 16,
+            offset_x: 0,
+            offset_y: 0,
+            bitmap,
+        };
+
+        // The full diagonal has 16 lit source pixels.
+        let original = glyph.render();
+        let source_ink: u32 = original.iter().map(|&v| v as u32).sum();
+        assert_eq!(source_ink, 16 * 255);
+
+        // Downscale into a 7x14 cell (the case that used to drop the mark).
+        let scaled = glyph.render_scaled(7, 14, 16, 16);
+        assert!(scaled.width >= 1 && scaled.height >= 1);
+
+        let scaled_ink: u32 = scaled.bitmap.iter().map(|&v| v as u32).sum();
+        assert!(
+            scaled_ink > 0,
+            "thin diagonal disappeared after downscale (ink={scaled_ink})"
+        );
+
+        // Area averaging should preserve roughly area-proportional ink, far more
+        // than nearest-neighbor (which routinely dropped most of it).
+        let area_ratio = (7.0 * 14.0) / (16.0 * 16.0);
+        let expected = source_ink as f32 * area_ratio;
+        assert!(
+            scaled_ink as f32 > expected * 0.33,
+            "too much ink lost: got {scaled_ink}, expected ~{expected}"
+        );
     }
 }
