@@ -2970,15 +2970,13 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
-            WindowEvent::Focused(true) => {
+            WindowEvent::Focused(true) if self.hidden_by_hotkey => {
                 // Re-show window when activated (e.g. dock click) after hiding via hotkey
-                if self.hidden_by_hotkey {
-                    if let Some(window) = &self.window {
-                        window.set_visible(true);
-                    }
-                    self.hidden_by_hotkey = false;
-                    tracing::info!("Window re-shown via focus (was hidden by hotkey)");
+                if let Some(window) = &self.window {
+                    window.set_visible(true);
                 }
+                self.hidden_by_hotkey = false;
+                tracing::info!("Window re-shown via focus (was hidden by hotkey)");
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
@@ -3027,154 +3025,154 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state, button, .. } => {
-                if button == MouseButton::Left {
-                    match state {
-                        ElementState::Pressed => {
-                            // Check if clicking on a scrollbar first
-                            // scrollbar_at already undistorts internally for hit testing
-                            let (mx, my) = self.mouse_pos;
-                            if let Some(geo) = self.scrollbar_at(mx, my) {
-                                // Undistort mouse position for thumb hit test and position math
-                                let per_pane_crt = self.current_config().per_pane_crt;
-                                let pane_rect = if per_pane_crt {
-                                    self.renderer.as_ref().and_then(|r| {
-                                        let (ww, wh) = r.window_size();
-                                        let rects = self.layout.pane_rects(ww as f32, wh as f32);
-                                        rects.get(&geo.pane_id).copied()
-                                    })
-                                } else {
-                                    None
-                                };
-                                let (cx, cy) = self
-                                    .screen_to_content(mx, my, pane_rect.as_ref())
-                                    .unwrap_or((mx, my));
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                match state {
+                    ElementState::Pressed => {
+                        // Check if clicking on a scrollbar first
+                        // scrollbar_at already undistorts internally for hit testing
+                        let (mx, my) = self.mouse_pos;
+                        if let Some(geo) = self.scrollbar_at(mx, my) {
+                            // Undistort mouse position for thumb hit test and position math
+                            let per_pane_crt = self.current_config().per_pane_crt;
+                            let pane_rect = if per_pane_crt {
+                                self.renderer.as_ref().and_then(|r| {
+                                    let (ww, wh) = r.window_size();
+                                    let rects = self.layout.pane_rects(ww as f32, wh as f32);
+                                    rects.get(&geo.pane_id).copied()
+                                })
+                            } else {
+                                None
+                            };
+                            let (cx, cy) = self
+                                .screen_to_content(mx, my, pane_rect.as_ref())
+                                .unwrap_or((mx, my));
 
-                                // Focus the pane that owns this scrollbar
-                                if geo.pane_id != self.layout.focused_pane() {
-                                    self.layout.set_focus(geo.pane_id);
-                                }
-
-                                let current_offset = self
-                                    .terminals
-                                    .get(&geo.pane_id)
-                                    .map(|t| t.display_offset())
-                                    .unwrap_or(0);
-
-                                if geo.thumb_hit_test(cx, cy) {
-                                    // Start dragging the thumb
-                                    self.scrollbar_drag = Some(ScrollbarDrag {
-                                        pane_id: geo.pane_id,
-                                        start_y: cy,
-                                        start_offset: current_offset,
-                                        geo,
-                                    });
-                                } else {
-                                    // Clicked on track: jump scroll to this position
-                                    let target_offset = geo.y_to_offset(cy);
-                                    if let Some(terminal) = self.terminals.get(&geo.pane_id) {
-                                        terminal.scroll_to_offset(target_offset);
-                                        self.last_scroll.insert(geo.pane_id, Instant::now());
-                                    }
-                                    // Start dragging from the new position
-                                    self.scrollbar_drag = Some(ScrollbarDrag {
-                                        pane_id: geo.pane_id,
-                                        start_y: cy,
-                                        start_offset: target_offset,
-                                        geo,
-                                    });
-                                }
-                                return;
+                            // Focus the pane that owns this scrollbar
+                            if geo.pane_id != self.layout.focused_pane() {
+                                self.layout.set_focus(geo.pane_id);
                             }
 
-                            // Hit test to change focus
-                            if let Some(renderer) = &self.renderer {
-                                let (win_width, win_height) = renderer.window_size();
-                                let (norm_x, norm_y) =
-                                    self.pixel_to_normalized(self.mouse_pos.0, self.mouse_pos.1);
-                                if let Some(clicked_pane) = self.layout.hit_test(
-                                    norm_x,
-                                    norm_y,
-                                    win_width as f32,
-                                    win_height as f32,
-                                ) {
-                                    if clicked_pane != self.layout.focused_pane() {
-                                        self.layout.set_focus(clicked_pane);
-                                        tracing::info!("Focus changed to pane {:?}", clicked_pane);
-                                    }
+                            let current_offset = self
+                                .terminals
+                                .get(&geo.pane_id)
+                                .map(|t| t.display_offset())
+                                .unwrap_or(0);
+
+                            if geo.thumb_hit_test(cx, cy) {
+                                // Start dragging the thumb
+                                self.scrollbar_drag = Some(ScrollbarDrag {
+                                    pane_id: geo.pane_id,
+                                    start_y: cy,
+                                    start_offset: current_offset,
+                                    geo,
+                                });
+                            } else {
+                                // Clicked on track: jump scroll to this position
+                                let target_offset = geo.y_to_offset(cy);
+                                if let Some(terminal) = self.terminals.get(&geo.pane_id) {
+                                    terminal.scroll_to_offset(target_offset);
+                                    self.last_scroll.insert(geo.pane_id, Instant::now());
                                 }
+                                // Start dragging from the new position
+                                self.scrollbar_drag = Some(ScrollbarDrag {
+                                    pane_id: geo.pane_id,
+                                    start_y: cy,
+                                    start_offset: target_offset,
+                                    geo,
+                                });
                             }
+                            return;
+                        }
 
-                            // Only start selection if pointing at valid content (not the void)
-                            if let Some(pos) =
-                                self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1)
-                            {
-                                let now = Instant::now();
-
-                                // Check if this is a consecutive click (same position, within threshold)
-                                let is_consecutive = self
-                                    .last_click_time
-                                    .map(|t| now.duration_since(t) < DOUBLE_CLICK_THRESHOLD)
-                                    .unwrap_or(false)
-                                    && self
-                                        .last_click_pos
-                                        .map(|p| p.col == pos.col && p.row == pos.row)
-                                        .unwrap_or(false);
-
-                                if is_consecutive {
-                                    self.click_count += 1;
-                                } else {
-                                    self.click_count = 1;
+                        // Hit test to change focus
+                        if let Some(renderer) = &self.renderer {
+                            let (win_width, win_height) = renderer.window_size();
+                            let (norm_x, norm_y) =
+                                self.pixel_to_normalized(self.mouse_pos.0, self.mouse_pos.1);
+                            if let Some(clicked_pane) = self.layout.hit_test(
+                                norm_x,
+                                norm_y,
+                                win_width as f32,
+                                win_height as f32,
+                            ) {
+                                if clicked_pane != self.layout.focused_pane() {
+                                    self.layout.set_focus(clicked_pane);
+                                    tracing::info!("Focus changed to pane {:?}", clicked_pane);
                                 }
-
-                                match self.click_count {
-                                    2 => {
-                                        // Double-click: select word
-                                        if let Some((start, end)) = self.find_word_boundaries(pos) {
-                                            self.selection.start = start;
-                                            self.selection.end = end;
-                                            self.selection.active = false;
-                                        }
-                                    }
-                                    3 => {
-                                        // Triple-click: select line
-                                        if let Some((start, end)) = self.find_line_boundaries(pos) {
-                                            self.selection.start = start;
-                                            self.selection.end = end;
-                                            self.selection.active = false;
-                                        }
-                                        // Reset after triple-click
-                                        self.click_count = 0;
-                                    }
-                                    _ => {
-                                        // Single click: start normal selection
-                                        self.selection.start = pos;
-                                        self.selection.end = pos;
-                                        self.selection.active = true;
-                                    }
-                                }
-
-                                // Record scroll counter so we can adjust
-                                // selection if new output pushes content up
-                                let focused = self.layout.focused_pane();
-                                self.selection_scroll_anchor = self
-                                    .terminals
-                                    .get(&focused)
-                                    .map(|t| t.total_lines_scrolled());
-
-                                self.last_click_time = Some(now);
-                                self.last_click_pos = Some(pos);
                             }
                         }
-                        ElementState::Released => {
-                            if self.scrollbar_drag.is_some() {
-                                self.scrollbar_drag = None;
-                                return;
+
+                        // Only start selection if pointing at valid content (not the void)
+                        if let Some(pos) = self.pixel_to_cell(self.mouse_pos.0, self.mouse_pos.1) {
+                            let now = Instant::now();
+
+                            // Check if this is a consecutive click (same position, within threshold)
+                            let is_consecutive = self
+                                .last_click_time
+                                .map(|t| now.duration_since(t) < DOUBLE_CLICK_THRESHOLD)
+                                .unwrap_or(false)
+                                && self
+                                    .last_click_pos
+                                    .map(|p| p.col == pos.col && p.row == pos.row)
+                                    .unwrap_or(false);
+
+                            if is_consecutive {
+                                self.click_count += 1;
+                            } else {
+                                self.click_count = 1;
                             }
-                            self.selection.active = false;
-                            if self.config.behavior.auto_copy_selection {
-                                self.copy_selection();
+
+                            match self.click_count {
+                                2 => {
+                                    // Double-click: select word
+                                    if let Some((start, end)) = self.find_word_boundaries(pos) {
+                                        self.selection.start = start;
+                                        self.selection.end = end;
+                                        self.selection.active = false;
+                                    }
+                                }
+                                3 => {
+                                    // Triple-click: select line
+                                    if let Some((start, end)) = self.find_line_boundaries(pos) {
+                                        self.selection.start = start;
+                                        self.selection.end = end;
+                                        self.selection.active = false;
+                                    }
+                                    // Reset after triple-click
+                                    self.click_count = 0;
+                                }
+                                _ => {
+                                    // Single click: start normal selection
+                                    self.selection.start = pos;
+                                    self.selection.end = pos;
+                                    self.selection.active = true;
+                                }
                             }
+
+                            // Record scroll counter so we can adjust
+                            // selection if new output pushes content up
+                            let focused = self.layout.focused_pane();
+                            self.selection_scroll_anchor = self
+                                .terminals
+                                .get(&focused)
+                                .map(|t| t.total_lines_scrolled());
+
+                            self.last_click_time = Some(now);
+                            self.last_click_pos = Some(pos);
+                        }
+                    }
+                    ElementState::Released => {
+                        if self.scrollbar_drag.is_some() {
+                            self.scrollbar_drag = None;
+                            return;
+                        }
+                        self.selection.active = false;
+                        if self.config.behavior.auto_copy_selection {
+                            self.copy_selection();
                         }
                     }
                 }
