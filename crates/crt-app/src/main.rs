@@ -3237,6 +3237,16 @@ impl ApplicationHandler for App {
                         return;
                     }
 
+                    // Ctrl+Shift+K: Nuke focused pane (SIGKILL a hung shell, then close)
+                    if ctrl && shift && event.logical_key == Key::Character("K".into()) {
+                        let focused = self.layout.focused_pane();
+                        if let Some(terminal) = self.terminals.get(&focused) {
+                            terminal.kill();
+                        }
+                        self.close_pane(focused);
+                        return;
+                    }
+
                     // Ctrl+, or Ctrl+Shift+P: Open config UI
                     if (ctrl && event.logical_key == Key::Character(",".into()))
                         || (ctrl && shift && event.logical_key == Key::Character("P".into()))

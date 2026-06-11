@@ -182,6 +182,33 @@ impl Terminal {
         self.child_pid
     }
 
+    /// Force-kill the shell process and its entire process group with SIGKILL.
+    ///
+    /// SIGKILL cannot be caught or ignored, so this nukes a hung shell that
+    /// won't die from the SIGHUP sent when the PTY is closed. The shell is a
+    /// session/process-group leader (alacritty's PTY calls setsid), so we
+    /// signal the negated PID to take down any children it spawned too.
+    #[cfg(unix)]
+    pub fn kill(&self) {
+        if self.child_pid == 0 {
+            return;
+        }
+        let pid = self.child_pid as libc::pid_t;
+        // SAFETY: kill(2) on a possibly-dead PID is harmless (returns ESRCH).
+        unsafe {
+            // Kill the whole process group; fall back to the lone PID if the
+            // process group is already gone.
+            if libc::kill(-pid, libc::SIGKILL) != 0 {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+        tracing::info!("Sent SIGKILL to shell process group {}", self.child_pid);
+    }
+
+    /// Force-kill the shell process (no-op on Windows).
+    #[cfg(windows)]
+    pub fn kill(&self) {}
+
     /// Get the current working directory of the shell process
     pub fn working_directory(&self) -> Option<std::path::PathBuf> {
         crate::process_info::get_process_cwd(self.child_pid)
