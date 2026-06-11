@@ -65,7 +65,7 @@ For Windows, download the latest `.zip` from [Releases](https://github.com/Aeolu
 
 ## Building from Source
 
-Requires Rust 1.70+ and a GPU with Vulkan/Metal/DX12 support.
+Requires Rust 1.94+ and a GPU with Vulkan/Metal/DX12 support.
 
 ```bash
 cargo build --release
