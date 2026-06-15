@@ -3,6 +3,22 @@
 
 set -e
 
+# GUI git clients and editors often run hooks with a minimal PATH that lacks
+# ~/.cargo/bin, so `cargo` isn't found. Make it discoverable.
+if ! command -v cargo >/dev/null 2>&1; then
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    case ":$PATH:" in
+        *":$HOME/.cargo/bin:"*) ;;
+        *) PATH="$HOME/.cargo/bin:$PATH" ;;
+    esac
+    export PATH
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "error: cargo not found on PATH; install Rust or add ~/.cargo/bin to PATH" >&2
+    exit 1
+fi
+
 echo "Running cargo fmt..."
 cargo fmt --all -- --check
 
