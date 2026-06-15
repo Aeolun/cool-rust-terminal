@@ -20,6 +20,10 @@ pub struct Terminal {
     term: Arc<FairMutex<Term<EventProxy>>>,
     sender: EventLoopSender,
     exited: Arc<AtomicBool>,
+    /// Set whenever the terminal produced something that changes the rendered
+    /// output (new PTY output, mode change, bell, child exit). The app clears it
+    /// via `take_dirty()` to decide whether a frame needs a content rebuild.
+    dirty: Arc<AtomicBool>,
     /// PID of the shell process (Unix only, 0 on Windows)
     child_pid: u32,
 }
@@ -28,6 +32,7 @@ pub struct Terminal {
 #[derive(Clone)]
 struct EventProxy {
     exited: Arc<AtomicBool>,
+    dirty: Arc<AtomicBool>,
     sender: std::sync::mpsc::Sender<String>,
 }
 
@@ -36,10 +41,17 @@ impl alacritty_terminal::event::EventListener for EventProxy {
         match event {
             Event::Exit => {
                 self.exited.store(true, Ordering::SeqCst);
+                self.dirty.store(true, Ordering::SeqCst);
             }
             Event::PtyWrite(text) => {
                 // Send response back to PTY (e.g., cursor position query response)
                 let _ = self.sender.send(text);
+            }
+            // Anything that mutates rendered cells / triggers a redraw. `Wakeup`
+            // is emitted once per processed PTY byte batch, so it covers grid
+            // output, cursor movement, and terminal mode changes.
+            Event::Wakeup | Event::ChildExit(_) | Event::Bell | Event::MouseCursorDirty => {
+                self.dirty.store(true, Ordering::SeqCst);
             }
             _ => {}
         }
@@ -129,12 +141,15 @@ impl Terminal {
         let child_pid = 0;
 
         let exited = Arc::new(AtomicBool::new(false));
+        // Start dirty so the very first frame performs a full content render.
+        let dirty = Arc::new(AtomicBool::new(true));
 
         // Channel for PtyWrite events (cursor position queries, etc.)
         let (pty_write_tx, pty_write_rx) = std::sync::mpsc::channel::<String>();
 
         let event_proxy = EventProxy {
             exited: Arc::clone(&exited),
+            dirty: Arc::clone(&dirty),
             sender: pty_write_tx,
         };
 
@@ -168,6 +183,7 @@ impl Terminal {
             term,
             sender,
             exited,
+            dirty,
             child_pid,
         })
     }
@@ -175,6 +191,12 @@ impl Terminal {
     /// Check if the shell has exited
     pub fn has_exited(&self) -> bool {
         self.exited.load(Ordering::SeqCst)
+    }
+
+    /// Return whether the terminal changed since the last call, clearing the
+    /// flag. Used by the render loop to decide if a content rebuild is needed.
+    pub fn take_dirty(&self) -> bool {
+        self.dirty.swap(false, Ordering::SeqCst)
     }
 
     /// Get the PID of the shell process (Unix only, returns 0 on Windows)
@@ -362,5 +384,75 @@ impl Terminal {
     pub fn term_mode(&self) -> alacritty_terminal::term::TermMode {
         let term = self.term.lock();
         *term.mode()
+    }
+}
+
+impl Drop for Terminal {
+    /// Tear down the PTY reader thread and the shell when a pane is closed.
+    ///
+    /// Without this, dropping a `Terminal` leaks: alacritty's `EventLoop` keeps
+    /// its own copy of the channel sender, so the background "PTY reader" thread
+    /// never sees the channel disconnect and keeps running, holding the PTY (and
+    /// therefore the shell process) alive forever.
+    fn drop(&mut self) {
+        // Only signal a live shell. If it already exited, alacritty's `Pty::drop`
+        // has reaped the child via `waitpid`, after which the PID can be recycled
+        // by an unrelated process — signalling it (especially the negated PID, a
+        // whole process group) would then hit the wrong target.
+        if !self.has_exited() {
+            // Force-kill the shell's process group so no child outlives its pane.
+            self.kill();
+        }
+
+        // Tell the reader thread to stop. Draining `Msg::Shutdown` breaks its
+        // loop, which drops the `EventLoop` (and its `Pty`); `Pty::drop` then
+        // reaps the child and, by dropping the last `Term`, releases the sender
+        // that keeps the `PtyWrite` forwarder thread parked on `recv`.
+        let _ = self.sender.send(Msg::Shutdown);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Whether a process (or zombie) with `pid` still exists.
+    ///
+    /// `kill(pid, 0)` does the kernel's permission/existence check without
+    /// delivering a signal: it returns 0 while the PID exists and fails with
+    /// `ESRCH` once it's gone and reaped.
+    fn process_alive(pid: u32) -> bool {
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// Regression test: dropping a `Terminal` must not leak the shell process.
+    ///
+    /// Before `Terminal` had a `Drop`, closing a pane only removed it from the
+    /// app's map; the alacritty reader thread kept the PTY (and the shell) alive
+    /// indefinitely.
+    #[test]
+    fn drop_kills_shell_process() {
+        let term = Terminal::new(80, 24).expect("spawn terminal");
+        let pid = term.child_pid();
+        assert_ne!(pid, 0, "expected a real child PID on unix");
+        assert!(
+            process_alive(pid),
+            "shell should be running right after spawn"
+        );
+
+        drop(term);
+
+        // Drop force-kills the process group and signals the reader thread to
+        // stop; that thread's teardown reaps the child. Poll until it's gone.
+        let mut gone = false;
+        for _ in 0..200 {
+            if !process_alive(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(gone, "shell process {pid} survived Terminal drop (leak)");
     }
 }

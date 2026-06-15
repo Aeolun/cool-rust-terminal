@@ -13,7 +13,7 @@ use anyhow::Result;
 use arboard::Clipboard;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Icon, Window, WindowAttributes, WindowId};
@@ -254,7 +254,7 @@ mod kitty_keyboard {
 const PANE_PADDING: f32 = 8.0; // Pixels of padding around each pane's content
 
 /// Buffer-relative cell position (row can be negative for scrollback history)
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct CellPos {
     col: usize,
     /// Buffer-relative row: 0 = first screen line when not scrolled,
@@ -318,6 +318,9 @@ const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
 const SCROLLBAR_HOVER_PROXIMITY: f64 = 20.0; // Show scrollbar when mouse within this many px of edge
 const SCROLLBAR_WIDTH: f32 = 4.0;
 const DEFAULT_FPS: u32 = 60; // Fallback if we can't detect refresh rate
+/// While the window isn't drawable (hidden/occluded) we stop rendering but keep
+/// polling at this slow cadence so the global show/hide hotkey stays responsive.
+const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 const HIGH_DPI_SCALE_THRESHOLD: f64 = 1.5;
 
@@ -426,6 +429,41 @@ struct ScrollbarDrag {
     geo: ScrollbarGeometry,
 }
 
+/// Per-pane content-affecting state, compared frame-to-frame to decide whether
+/// a full content rebuild is needed.
+#[derive(Clone, PartialEq)]
+struct PaneContentSnapshot {
+    id: PaneId,
+    display_offset: usize,
+    /// Normalized pane rect, compared bit-exactly (layout is deterministic).
+    rect_bits: (u32, u32, u32, u32),
+}
+
+/// Snapshot of everything that affects the rendered *content* (the offscreen
+/// text texture and UI overlays) but is NOT driven by the terminal's own damage
+/// signal. If this is unchanged AND no pane reported damage AND no timed overlay
+/// is animating, the frame can skip the content rebuild and run effects only.
+#[derive(Clone, PartialEq)]
+struct RenderSnapshot {
+    win_size: (u32, u32),
+    scale_bits: u64,
+    config_ui_visible: bool,
+    debug_grid: bool,
+    per_pane_crt: bool,
+    color_scheme: ColorScheme,
+    focused_pane: PaneId,
+    panes: Vec<PaneContentSnapshot>,
+    /// (active, start.col, start.row, end.col, end.row)
+    selection: (bool, usize, i32, usize, i32),
+    /// (visible, matches_len, current_match)
+    search: (bool, usize, usize),
+    scrollbar_hover: Option<PaneId>,
+    scrollbar_drag: Option<PaneId>,
+    /// (update_info.is_some(), update_available)
+    update: (bool, bool),
+    paste_dialog: bool,
+}
+
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
@@ -499,6 +537,13 @@ struct App {
     rmrf_was_detected: HashSet<PaneId>,
     /// Panes currently showing "sudo" on screen (rainbow effect while visible)
     sudo_active_panes: HashSet<PaneId>,
+    /// Whether the window is currently not drawable (occluded, minimized, or
+    /// fully covered). Paired with `hidden_by_hotkey` to pause the render loop.
+    occluded: bool,
+    /// Content-state snapshot from the previous frame. `None` forces the first
+    /// frame to be a full render (the offscreen texture must be populated before
+    /// any effect-only frame samples it). See `content_dirty`.
+    last_snapshot: Option<RenderSnapshot>,
 }
 
 struct PasteDialog {
@@ -566,6 +611,8 @@ impl App {
             rmrf_glitch_start: HashMap::new(),
             rmrf_was_detected: HashSet::new(),
             sudo_active_panes: HashSet::new(),
+            occluded: false,
+            last_snapshot: None,
         }
     }
 
@@ -1442,11 +1489,232 @@ impl App {
         }
     }
 
+    /// Build the GPU effect uniforms for the normal (non-config-UI) render path.
+    ///
+    /// Shared by the full content path and the effect-only path so the CRT
+    /// animation is identical regardless of whether content was rebuilt. Note
+    /// this MUTATES self: it expires `degauss_start` and advances the manual
+    /// beam-step clock, so it must be called exactly once per frame.
+    fn current_effect_params(&mut self) -> EffectParams {
+        let fg = self.config.color_scheme.foreground;
+
+        // Calculate degauss animation progress (0.8 second animation)
+        const DEGAUSS_DURATION: f32 = 0.8;
+        let degauss_progress = if let Some(start) = self.degauss_start {
+            let elapsed = start.elapsed().as_secs_f32();
+            if elapsed >= DEGAUSS_DURATION {
+                self.degauss_start = None;
+                0.0
+            } else {
+                elapsed / DEGAUSS_DURATION
+            }
+        } else {
+            0.0
+        };
+
+        EffectParams {
+            curvature: self.config.effects.screen_curvature,
+            scanline_intensity: self.config.effects.scanline_intensity,
+            scanline_mode: match self.config.effects.scanline_mode {
+                ScanlineMode::RowBased => 0,
+                ScanlineMode::Pixel => 1,
+            },
+            bloom: self.config.effects.bloom,
+            burn_in: self.config.effects.burn_in,
+            focus_glow_radius: self.config.effects.focus_glow_radius,
+            focus_glow_width: self.config.effects.focus_glow_width,
+            focus_glow_intensity: self.config.effects.focus_glow_intensity,
+            static_noise: self.config.effects.static_noise,
+            flicker: self.config.effects.flicker,
+            brightness: self.config.effects.brightness,
+            vignette: self.config.effects.vignette,
+            bezel_enabled: self.config.effects.bezel_enabled,
+            content_scale_x: self.config.effects.content_scale_x,
+            content_scale_y: self.config.effects.content_scale_y,
+            glow_color: [fg[0], fg[1], fg[2], 1.0],
+            // Beam sweep / interlacing simulation
+            // At 240Hz with divisor 4: 60 fields/sec (NTSC timing)
+            // beam_speed_divisor 0 disables beam simulation
+            interlace_enabled: self.config.effects.interlace_enabled
+                && self.config.effects.beam_simulation_enabled,
+            beam_speed_divisor: if self.config.effects.beam_simulation_enabled {
+                4
+            } else {
+                0
+            },
+            beam_paused: self.beam_paused,
+            beam_step_count: {
+                // Step if key is held and enough time has passed
+                let should_step = self.beam_step_held
+                    && self.beam_step_last.elapsed()
+                        >= Duration::from_millis(self.beam_step_delay_ms as u64);
+                if should_step {
+                    self.beam_step_last = Instant::now();
+                    1
+                } else {
+                    0
+                }
+            },
+            degauss_progress,
+            hsync_intensity: if self.hsync_lost { 1.0 } else { 0.0 },
+        }
+    }
+
+    /// Decide whether this frame needs a full content rebuild, or whether the
+    /// terminal content is unchanged and we can run only the GPU effect passes.
+    ///
+    /// STRICT dirty tracking (by design — Bart wants missed sources to surface
+    /// as visible bugs, not be papered over by a periodic rebuild). Returns true
+    /// if ANY of: a pane reported terminal damage; the content snapshot differs
+    /// from last frame; a timed overlay is mid-animation; an always-live mode is
+    /// active; or an easter egg is mutating cells.
+    ///
+    /// MUST be called once per frame: it clears every pane's damage flag and
+    /// updates `last_snapshot`.
+    fn content_dirty(&mut self) -> bool {
+        // 1. Terminal damage — call take_dirty() for EVERY pane to clear flags,
+        //    so we never short-circuit and leave a stale flag set.
+        let mut terminal_dirty = false;
+        for terminal in self.terminals.values() {
+            if terminal.take_dirty() {
+                terminal_dirty = true;
+            }
+        }
+
+        // 2. Build the current content snapshot and compare to last frame's.
+        let (win_w, win_h) = match &self.renderer {
+            Some(r) => r.window_size(),
+            None => return true,
+        };
+        let scale_bits = self
+            .window
+            .as_ref()
+            .map(|w| w.scale_factor().to_bits())
+            .unwrap_or(0);
+        let focused_pane = self.layout.focused_pane();
+        let rects = self.layout.pane_rects(win_w as f32, win_h as f32);
+        let panes: Vec<PaneContentSnapshot> = self
+            .layout
+            .panes()
+            .iter()
+            .filter_map(|pane_id| {
+                let rect = rects.get(pane_id)?;
+                let display_offset = self
+                    .terminals
+                    .get(pane_id)
+                    .map(|t| t.display_offset())
+                    .unwrap_or(0);
+                Some(PaneContentSnapshot {
+                    id: *pane_id,
+                    display_offset,
+                    rect_bits: (
+                        rect.x.to_bits(),
+                        rect.y.to_bits(),
+                        rect.width.to_bits(),
+                        rect.height.to_bits(),
+                    ),
+                })
+            })
+            .collect();
+
+        let current_cfg = self.current_config();
+        let snapshot = RenderSnapshot {
+            win_size: (win_w, win_h),
+            scale_bits,
+            config_ui_visible: self.config_ui.visible,
+            debug_grid: self.debug_grid,
+            per_pane_crt: current_cfg.per_pane_crt,
+            color_scheme: current_cfg.color_scheme.clone(),
+            focused_pane,
+            panes,
+            selection: (
+                self.selection.active,
+                self.selection.start.col,
+                self.selection.start.row,
+                self.selection.end.col,
+                self.selection.end.row,
+            ),
+            search: (
+                self.search_ui.visible,
+                self.search_ui.matches.len(),
+                self.search_ui.current_match,
+            ),
+            scrollbar_hover: self.scrollbar_hover_pane,
+            scrollbar_drag: self.scrollbar_drag.as_ref().map(|d| d.pane_id),
+            update: (
+                self.update_info.is_some(),
+                self.update_info
+                    .as_ref()
+                    .map(|i| i.update_available)
+                    .unwrap_or(false),
+            ),
+            paste_dialog: self.paste_dialog.is_some(),
+        };
+        let snapshot_changed = self.last_snapshot.as_ref() != Some(&snapshot);
+        if snapshot_changed {
+            self.last_snapshot = Some(snapshot);
+        }
+
+        // 3. Timed overlays — dirty for the entire animation window plus one
+        //    extra frame so the disappearance frame is still rebuilt.
+        let frame = self.frame_duration;
+        let timed_dirty = {
+            // Resize indicator
+            let resize = self
+                .last_resize
+                .is_some_and(|t| t.elapsed() < RESIZE_INDICATOR_DURATION + frame);
+            // Per-pane scrollbar fade-out
+            let scrollbar_fade = self.last_scroll.values().any(|t| {
+                t.elapsed() < SCROLLBAR_VISIBLE_DURATION + SCROLLBAR_FADE_DURATION + frame
+            });
+            // Kitty keyboard-protocol message
+            let kitty = self.kitty_mode_message.is_some_and(|(_, start, _, _)| {
+                start.elapsed() < Duration::from_secs_f32(1.5) + frame
+            });
+            // Bracketed-paste message
+            let bracketed = self.bracketed_paste_message.is_some_and(|(_, start, _)| {
+                start.elapsed() < Duration::from_secs_f32(BRACKETED_MSG_DURATION) + frame
+            });
+            // Startup hint (and its fade), which also covers the power-on window.
+            let startup_hint = self.config.behavior.show_startup_hint
+                && !self.config_ui.visible
+                && self.app_start.elapsed()
+                    < Duration::from_secs_f32(
+                        STARTUP_HINT_DELAY + STARTUP_HINT_DURATION + STARTUP_HINT_FADE,
+                    ) + frame;
+            resize || scrollbar_fade || kitty || bracketed || startup_hint
+        };
+
+        // 4. Always-live modes: these recompute or animate every frame.
+        let always_dirty = self.config_ui.visible
+            || self.search_ui.visible
+            || self.debug_grid
+            || self.terminals.values().any(|t| t.has_exited());
+
+        // 5. Active easter eggs mutate cells every frame while running.
+        let egg_dirty = !self.rmrf_glitch_start.is_empty() || !self.sudo_active_panes.is_empty();
+
+        terminal_dirty || snapshot_changed || timed_dirty || always_dirty || egg_dirty
+    }
+
     fn render_terminals(&mut self, dt: f32) {
         let _span = tracing::trace_span!("render_terminals").entered();
 
         // Record frame time for FPS display
         let fps = self.record_frame_time(dt);
+
+        // Gate the expensive content rebuild: if nothing visible changed, run
+        // only the GPU effect passes (CRT noise/scanlines keep animating) and
+        // reuse the persistent offscreen text texture from the last full frame.
+        if !self.content_dirty() {
+            let effects = self.current_effect_params();
+            if let Some(renderer) = &mut self.renderer {
+                if let Err(e) = renderer.render_effects_only(effects) {
+                    tracing::error!("Effect-only render error: {}", e);
+                }
+            }
+            return;
+        }
 
         let scale_factor = self
             .window
@@ -1470,6 +1738,15 @@ impl App {
             let config = self.config.clone();
             self.apply_font_settings(&config, scale_factor);
         }
+
+        // Build the normal-path effect uniforms before borrowing the renderer
+        // (current_effect_params needs &mut self). The config-UI path builds its
+        // own preview effects inline and ignores this.
+        let normal_effects = if self.config_ui.visible {
+            None
+        } else {
+            Some(self.current_effect_params())
+        };
 
         let Some(renderer) = &mut self.renderer else {
             return;
@@ -1694,11 +1971,13 @@ impl App {
         // "rm -rf /" triggers permanent corruption; plain "rm -rf" is a brief burst
         {
             let mut currently_detected = HashSet::new();
+            let mut line = String::new();
             for (pane_id, _x, _y, cells, _cursor) in &pane_renders {
                 let mut found = false;
                 let mut found_slash = false;
                 for row in cells {
-                    let line: String = row.iter().map(|c| c.c).collect();
+                    line.clear();
+                    line.extend(row.iter().map(|c| c.c));
                     // Check each possible match position
                     for pattern in &["rm -rf", "rm  -rf"] {
                         let mut search_from = 0;
@@ -1781,6 +2060,7 @@ impl App {
         // Uses same uniform-fg-color check to ignore autocomplete suggestions
         {
             let mut sudo_panes = HashSet::new();
+            let mut line = String::new();
             for (pane_id, _x, _y, cells, cursor_row) in &pane_renders {
                 // Only check the cursor line (active prompt), not scrollback history
                 let Some(crow) = cursor_row else {
@@ -1790,7 +2070,8 @@ impl App {
                     continue;
                 }
                 let row = &cells[*crow];
-                let line: String = row.iter().map(|c| c.c).collect();
+                line.clear();
+                line.extend(row.iter().map(|c| c.c));
                 let mut found = false;
                 let mut search_from = 0;
                 while let Some(pos) = line[search_from..].find("sudo") {
@@ -2395,69 +2676,10 @@ impl App {
                 tracing::error!("Config UI render error: {}", e);
             }
         } else {
-            // Ensure we're using the saved config's font (in case preview changed it)
-            let fg = self.config.color_scheme.foreground;
-
-            // Calculate degauss animation progress (0.8 second animation)
-            const DEGAUSS_DURATION: f32 = 0.8;
-            let degauss_progress = if let Some(start) = self.degauss_start {
-                let elapsed = start.elapsed().as_secs_f32();
-                if elapsed >= DEGAUSS_DURATION {
-                    self.degauss_start = None;
-                    0.0
-                } else {
-                    elapsed / DEGAUSS_DURATION
-                }
-            } else {
-                0.0
-            };
-
-            let effects = EffectParams {
-                curvature: self.config.effects.screen_curvature,
-                scanline_intensity: self.config.effects.scanline_intensity,
-                scanline_mode: match self.config.effects.scanline_mode {
-                    ScanlineMode::RowBased => 0,
-                    ScanlineMode::Pixel => 1,
-                },
-                bloom: self.config.effects.bloom,
-                burn_in: self.config.effects.burn_in,
-                focus_glow_radius: self.config.effects.focus_glow_radius,
-                focus_glow_width: self.config.effects.focus_glow_width,
-                focus_glow_intensity: self.config.effects.focus_glow_intensity,
-                static_noise: self.config.effects.static_noise,
-                flicker: self.config.effects.flicker,
-                brightness: self.config.effects.brightness,
-                vignette: self.config.effects.vignette,
-                bezel_enabled: self.config.effects.bezel_enabled,
-                content_scale_x: self.config.effects.content_scale_x,
-                content_scale_y: self.config.effects.content_scale_y,
-                glow_color: [fg[0], fg[1], fg[2], 1.0],
-                // Beam sweep / interlacing simulation
-                // At 240Hz with divisor 4: 60 fields/sec (NTSC timing)
-                // beam_speed_divisor 0 disables beam simulation
-                interlace_enabled: self.config.effects.interlace_enabled
-                    && self.config.effects.beam_simulation_enabled,
-                beam_speed_divisor: if self.config.effects.beam_simulation_enabled {
-                    4
-                } else {
-                    0
-                },
-                beam_paused: self.beam_paused,
-                beam_step_count: {
-                    // Step if key is held and enough time has passed
-                    let should_step = self.beam_step_held
-                        && self.beam_step_last.elapsed()
-                            >= Duration::from_millis(self.beam_step_delay_ms as u64);
-                    if should_step {
-                        self.beam_step_last = Instant::now();
-                        1
-                    } else {
-                        0
-                    }
-                },
-                degauss_progress,
-                hsync_intensity: if self.hsync_lost { 1.0 } else { 0.0 },
-            };
+            // Effects (CRT/burn-in/beam + degauss/hsync) are GPU uniforms shared
+            // by both the full and effect-only render paths. Computed above,
+            // before the renderer borrow.
+            let effects = normal_effects.expect("normal_effects set when config UI hidden");
 
             // Build debug visualization lines - green rectangle around hovered cell
             let mut debug_lines: Vec<(f32, f32, f32, f32, f32, [f32; 4])> =
@@ -2667,6 +2889,70 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    /// Drive the frame clock. This runs on every loop iteration, *before* the
+    /// loop sleeps — unlike `RedrawRequested`, which the OS withholds while the
+    /// window isn't drawable. Scheduling the next frame here is what prevents the
+    /// 100%-CPU spin: a hidden/occluded window simply parks instead of busy-
+    /// waiting on a `WaitUntil` deadline that has already elapsed.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // The global show/hide hotkey is system-wide and never arrives as a winit
+        // event, so we must poll it here too — otherwise, while hidden (and thus
+        // receiving no RedrawRequested), it could never be toggled back on.
+        self.poll_global_hotkey();
+
+        if self.hidden_by_hotkey || self.occluded {
+            // Window isn't visible: don't render. Poll slowly so the hotkey stays
+            // responsive rather than spinning a core.
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + HIDDEN_POLL_INTERVAL,
+            ));
+            return;
+        }
+
+        if self.window.is_some() {
+            // Park the thread until the next frame deadline. We deliberately do
+            // NOT call `request_redraw()` here: doing so posts an immediate
+            // redraw every loop iteration, which makes winit ignore the
+            // `WaitUntil` deadline and busy-spin (RedrawRequested fires, the
+            // frame-rate limiter skips it as "too soon", and we loop again at
+            // full tilt — ~88% of a core for a static screen). Instead, the
+            // redraw is requested from `new_events` only when the timer actually
+            // elapses (StartCause::ResumeTimeReached), so the thread genuinely
+            // sleeps between frames.
+            //
+            // Never schedule a deadline in the past. `last_frame` only advances
+            // when a frame actually renders; if the OS stops delivering redraws
+            // for a reason we can't flag (e.g. macOS app-hide via Cmd+H emits no
+            // Occluded event), `last_frame + frame_duration` freezes in the past
+            // and `WaitUntil(past)` becomes a 100%-CPU busy-loop. Clamping to a
+            // full frame from now caps the worst case at the frame rate instead.
+            let now = Instant::now();
+            let mut next_frame = self.last_frame + self.frame_duration;
+            if next_frame <= now {
+                next_frame = now + self.frame_duration;
+            }
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_frame));
+        }
+    }
+
+    /// Kick a redraw when the frame-pacing timer elapses (or on first start).
+    /// Pairs with `about_to_wait`, which parks the loop on a `WaitUntil`
+    /// deadline without forcing a redraw. This is what keeps the render loop at
+    /// the target frame rate while letting the thread sleep in between.
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        if self.hidden_by_hotkey || self.occluded {
+            return;
+        }
+        if matches!(
+            cause,
+            StartCause::ResumeTimeReached { .. } | StartCause::Init
+        ) {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -2914,9 +3200,6 @@ impl ApplicationHandler for App {
 
                 let _span = tracing::trace_span!("redraw_requested").entered();
 
-                // Poll for global hotkey events
-                self.poll_global_hotkey();
-
                 // Check for update check results
                 if let Some(ref rx) = self.update_receiver {
                     if let Ok(info) = rx.try_recv() {
@@ -2959,16 +3242,25 @@ impl ApplicationHandler for App {
                         (self.render_time_idx + 1) % self.render_time_samples.len();
                 }
 
-                // Schedule next frame via WaitUntil instead of blocking sleep
-                if let Some(window) = &self.window {
-                    let next_frame = self.last_frame + self.frame_duration;
-                    event_loop
-                        .set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_frame));
-                    window.request_redraw();
-                }
+                // The next frame is scheduled in `about_to_wait`, which runs every
+                // loop iteration regardless of whether the OS delivers a redraw.
+                // Re-arming here instead would peg a CPU core whenever the window
+                // stops being drawable (hidden/occluded/minimized): the control
+                // flow would stay stuck on an already-elapsed `WaitUntil`.
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
+            }
+            WindowEvent::Occluded(occluded) => {
+                // When the window is fully covered or minimized the OS stops
+                // delivering RedrawRequested. Track it so `about_to_wait` pauses
+                // the animation loop instead of spinning on a stale deadline.
+                self.occluded = occluded;
+                if !occluded {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
+                    }
+                }
             }
             WindowEvent::Focused(true) if self.hidden_by_hotkey => {
                 // Re-show window when activated (e.g. dock click) after hiding via hotkey

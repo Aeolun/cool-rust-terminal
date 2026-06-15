@@ -106,6 +106,11 @@ pub struct Renderer {
     bg_buf: Vec<(f32, f32, f32, f32, f32, [f32; 4])>,
     /// Last frame's rendering statistics
     last_stats: RenderStats,
+    /// CRT layout params from the last full content render. Reused on
+    /// effect-only frames (layout changes always trigger a full render).
+    last_per_pane_crt: bool,
+    last_pane_rects: Vec<(f32, f32, f32, f32)>,
+    last_focused_pane_index: i32,
 }
 
 impl Renderer {
@@ -199,6 +204,9 @@ impl Renderer {
             char_buf: Vec::new(),
             bg_buf: Vec::new(),
             last_stats: RenderStats::default(),
+            last_per_pane_crt: false,
+            last_pane_rects: Vec::new(),
+            last_focused_pane_index: 0,
         })
     }
 
@@ -560,11 +568,6 @@ impl Renderer {
         let (cell_w, cell_h) = self.atlas.cell_size();
         let ascent = self.atlas.ascent();
 
-        // Calculate delta time for animations
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32();
-        self.last_frame = now;
-
         self.char_buf.clear();
         self.bg_buf.clear();
 
@@ -767,6 +770,46 @@ impl Renderer {
             atlas_uploaded: atlas_was_dirty,
         };
 
+        // Cache CRT layout params so effect-only frames can reuse them
+        // (layout/focus changes always force a full content render).
+        self.last_per_pane_crt = per_pane_crt;
+        self.last_pane_rects.clear();
+        self.last_pane_rects
+            .extend_from_slice(pane_rects_normalized);
+        self.last_focused_pane_index = focused_pane_index;
+
+        self.submit_frame(effects, true)
+    }
+
+    /// Render only the burn-in + CRT effect passes, reusing the offscreen text
+    /// texture from the previous full render. Used when terminal content is
+    /// unchanged: the CRT animation keeps running on the GPU with no CPU-side
+    /// content rebuild or glyph re-upload.
+    pub fn render_effects_only(&mut self, effects: EffectParams) -> Result<(), RenderError> {
+        self.submit_frame(effects, false)
+    }
+
+    /// Run one frame's effect passes, optionally including the text pass.
+    ///
+    /// Every step here — CRT/burn-in uniform updates, the burn-in ping-pong,
+    /// the per-frame CRT bind-group rebuild, and the buffer swap — MUST run on
+    /// both paths. The burn-in target buffer alternates each frame, so skipping
+    /// any of it would make the CRT pass sample the wrong texture. The only
+    /// thing gated by `include_text_pass` is Pass 1 (drawing lines + text into
+    /// the offscreen texture); when false, the previous frame's offscreen is
+    /// reused verbatim.
+    fn submit_frame(
+        &mut self,
+        effects: EffectParams,
+        include_text_pass: bool,
+    ) -> Result<(), RenderError> {
+        let (width, height) = self.gpu.size;
+
+        // Advance the animation clock once per frame on both paths.
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
         // Update CRT uniforms
         let (_, cell_height) = self.atlas.cell_size();
         self.crt_pipeline.update(
@@ -774,9 +817,9 @@ impl Renderer {
             width as f32,
             height as f32,
             dt,
-            per_pane_crt,
-            pane_rects_normalized,
-            focused_pane_index,
+            self.last_per_pane_crt,
+            &self.last_pane_rects,
+            self.last_focused_pane_index,
             cell_height,
             effects.curvature,
             effects.scanline_intensity,
@@ -896,8 +939,10 @@ impl Renderer {
                 label: Some("Render Encoder"),
             });
 
-        // Pass 1: Render text to off-screen texture
-        {
+        // Pass 1: Render text to off-screen texture. Skipped on effect-only
+        // frames — the offscreen texture is persistent, so reusing it costs
+        // nothing and the burn-in/CRT passes below still animate.
+        if include_text_pass {
             let _span = tracing::trace_span!("text_pass").entered();
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Text Pass"),
