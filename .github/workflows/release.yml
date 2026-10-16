@@ -137,9 +137,6 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cargo-bundle
-        run: cargo install cargo-bundle
-
       - name: Build release binary
         run: cargo build --release --package crt-app --target ${{ matrix.target }}
 
@@ -154,8 +151,8 @@ jobs:
           # Copy binary
           cp target/${{ matrix.target }}/release/${{ env.APP_NAME }} "$APP_DIR/Contents/MacOS/"
 
-          # Copy icon
-          cp assets/icon.icns "$APP_DIR/Contents/Resources/"
+          # Copy icon: Assets.car for macOS 11+, AppIcon.icns for older systems
+          cp assets/macos/Assets.car assets/macos/AppIcon.icns "$APP_DIR/Contents/Resources/"
 
           # Create Info.plist with version from tag
           cat > "$APP_DIR/Contents/Info.plist" << EOF
@@ -178,7 +175,9 @@ jobs:
               <key>CFBundleExecutable</key>
               <string>cool-rust-term</string>
               <key>CFBundleIconFile</key>
-              <string>icon</string>
+              <string>AppIcon</string>
+              <key>CFBundleIconName</key>
+              <string>AppIcon</string>
               <key>LSMinimumSystemVersion</key>
               <string>10.13</string>
               <key>NSHighResolutionCapable</key>

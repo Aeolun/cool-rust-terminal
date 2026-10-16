@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Screen layer of the macOS app icon: full-bleed CRT glass with scanlines.
+     macOS masks it to the standard rounded square. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <radialGradient id="screenGlow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#1a1206" />
+      <stop offset="100%" stop-color="#0a0804" />
+    </radialGradient>
+    <pattern id="scanlines" patternUnits="userSpaceOnUse" width="8" height="8">
+      <rect width="8" height="4" fill="rgba(0,0,0,0.15)" />
+    </pattern>
+    <linearGradient id="screenHighlight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="rgba(255,200,100,0.1)" />
+      <stop offset="50%" stop-color="rgba(255,200,100,0)" />
+      <stop offset="100%" stop-color="rgba(0,0,0,0.2)" />
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#screenGlow)" />
+  <rect width="1024" height="1024" fill="url(#screenHighlight)" />
+  <rect width="1024" height="1024" fill="url(#scanlines)" />
+</svg>

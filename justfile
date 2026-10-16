@@ -16,9 +16,12 @@ release:
 run:
     cargo run
 
-# macOS app bundle (release)
+# macOS app bundle (release). cargo-bundle only handles the legacy .icns,
+# so the Icon Composer asset catalog is added afterwards.
 bundle: release
     cargo bundle --release --format osx -p crt-app
+    cp assets/macos/Assets.car "target/release/bundle/osx/Cool Rust Term.app/Contents/Resources/"
+    plutil -replace CFBundleIconName -string AppIcon "target/release/bundle/osx/Cool Rust Term.app/Contents/Info.plist"
 
 # macOS DMG installer
 dmg: bundle
@@ -33,22 +36,15 @@ dmg: bundle
         "CoolRustTerm.dmg" \
         "target/release/bundle/osx/Cool Rust Term.app"
 
-# Regenerate icon assets from icon.png
+# Regenerate the macOS icon (Assets.car + fallback AppIcon.icns) from the layer SVGs
 icons:
-    cd assets && \
-    rm -rf CoolRustTerm.iconset && \
-    mkdir CoolRustTerm.iconset && \
-    sips -z 16 16 icon.png --out CoolRustTerm.iconset/icon_16x16.png && \
-    sips -z 32 32 icon.png --out CoolRustTerm.iconset/icon_16x16@2x.png && \
-    sips -z 32 32 icon.png --out CoolRustTerm.iconset/icon_32x32.png && \
-    sips -z 64 64 icon.png --out CoolRustTerm.iconset/icon_32x32@2x.png && \
-    sips -z 128 128 icon.png --out CoolRustTerm.iconset/icon_128x128.png && \
-    sips -z 256 256 icon.png --out CoolRustTerm.iconset/icon_128x128@2x.png && \
-    sips -z 256 256 icon.png --out CoolRustTerm.iconset/icon_256x256.png && \
-    sips -z 512 512 icon.png --out CoolRustTerm.iconset/icon_256x256@2x.png && \
-    sips -z 512 512 icon.png --out CoolRustTerm.iconset/icon_512x512.png && \
-    sips -z 1024 1024 icon.png --out CoolRustTerm.iconset/icon_512x512@2x.png && \
-    iconutil -c icns CoolRustTerm.iconset -o icon.icns
+    rsvg-convert assets/macos/screen.svg -o assets/macos/AppIcon.icon/Assets/screen.png
+    rsvg-convert assets/macos/glyphs.svg -o assets/macos/AppIcon.icon/Assets/glyphs.png
+    xcrun actool "{{justfile_directory()}}/assets/macos/AppIcon.icon" \
+        --compile "{{justfile_directory()}}/assets/macos" --app-icon AppIcon \
+        --enable-on-demand-resources NO --development-region en \
+        --target-device mac --platform macosx --minimum-deployment-target 10.13 \
+        --output-partial-info-plist /dev/null --output-format human-readable-text
 
 # Clean build artifacts
 clean:

@@ -12,7 +12,7 @@ path = "src/main.rs"
 [package.metadata.bundle]
 name = "Cool Rust Term"
 identifier = "com.bartriepe.cool-rust-term"
-icon = ["assets/icon.icns"]
+icon = ["assets/macos/AppIcon.icns"]
 category = "public.app-category.developer-tools"
 short_description = "CRT-style terminal emulator"
 copyright = "Copyright © 2024 Bart Riepe. GPL-3.0 License."
