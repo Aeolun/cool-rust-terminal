@@ -3725,6 +3725,19 @@ impl ApplicationHandler for App {
 
                     // Handle config UI navigation when visible
                     if self.config_ui.visible {
+                        // Built-in hotkeys help view: any back/confirm key returns to settings.
+                        if self.config_ui.show_hotkeys {
+                            match &event.logical_key {
+                                Key::Named(NamedKey::Escape)
+                                | Key::Named(NamedKey::Enter)
+                                | Key::Named(NamedKey::Space) => {
+                                    self.config_ui.show_hotkeys = false;
+                                }
+                                _ => {}
+                            }
+                            return;
+                        }
+
                         // Hotkey recording mode: capture the next keypress
                         if self.config_ui.recording_hotkey {
                             match &event.logical_key {

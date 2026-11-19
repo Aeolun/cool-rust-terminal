@@ -5,6 +5,29 @@
 use crt_core::{BdfFont, ColorScheme, Config, ScanlineMode};
 use crt_renderer::RenderCell;
 
+/// Built-in keyboard shortcuts, shown in the help overlay.
+///
+/// The key column is padded to a fixed width so the descriptions line up.
+const BUILT_IN_HOTKEYS: &[(&str, &str)] = &[
+    ("Ctrl+,", "Settings"),
+    ("Ctrl+Shift+P", "Settings (alt)"),
+    ("Ctrl+Shift+Enter", "New pane"),
+    ("Ctrl+Shift+W", "Close pane"),
+    ("Ctrl+Shift+K", "Kill pane (SIGKILL)"),
+    ("Ctrl+Shift+Arrow", "Move focus"),
+    ("Ctrl+Shift+C", "Copy selection"),
+    ("Ctrl+Shift+V", "Paste"),
+    ("Ctrl+Shift+F", "Search scrollback"),
+    ("Ctrl+Shift+T", "Replay power-on"),
+    ("Shift+PgUp / PgDn", "Scroll history"),
+    ("Ctrl+Shift+G", "Debug grid"),
+    ("Ctrl+Shift+B", "Pause beam"),
+    ("Ctrl+Shift+N", "Step frame"),
+    ("Ctrl+Shift+= / -", "Beam step speed"),
+    ("Ctrl+Shift+H", "Toggle h-sync loss"),
+    ("Ctrl+Shift+D", "Debug cell dump"),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigTab {
     Effects,
@@ -81,6 +104,7 @@ pub enum ConfigField {
     ShowKittyMessage,
     CheckForUpdates,
     GlobalHotkey,
+    ShowHotkeys,
     // Common
     Save,
     Cancel,
@@ -128,6 +152,7 @@ impl ConfigField {
             ConfigField::ShowKittyMessage,
             ConfigField::CheckForUpdates,
             ConfigField::GlobalHotkey,
+            ConfigField::ShowHotkeys,
             // Common
             ConfigField::Save,
             ConfigField::Cancel,
@@ -143,6 +168,7 @@ impl ConfigField {
                 | ConfigField::BeamSimulation
                 | ConfigField::HighDpiFontType
                 | ConfigField::GlobalHotkey
+                | ConfigField::ShowHotkeys
         )
     }
 
@@ -184,6 +210,7 @@ impl ConfigField {
             ConfigField::ShowKittyMessage => "Kitty msg",
             ConfigField::CheckForUpdates => "Check updates",
             ConfigField::GlobalHotkey => "Show hotkey",
+            ConfigField::ShowHotkeys => "Built-in hotkeys",
             ConfigField::Save => "[ Save ]",
             ConfigField::Cancel => "[ Cancel ]",
         }
@@ -247,7 +274,10 @@ impl ConfigField {
     }
 
     fn is_button(&self) -> bool {
-        matches!(self, ConfigField::Save | ConfigField::Cancel)
+        matches!(
+            self,
+            ConfigField::Save | ConfigField::Cancel | ConfigField::ShowHotkeys
+        )
     }
 
     fn tab(&self) -> Option<ConfigTab> {
@@ -290,7 +320,8 @@ impl ConfigField {
             | ConfigField::ShowStartupHint
             | ConfigField::ShowKittyMessage
             | ConfigField::CheckForUpdates
-            | ConfigField::GlobalHotkey => Some(ConfigTab::Behavior),
+            | ConfigField::GlobalHotkey
+            | ConfigField::ShowHotkeys => Some(ConfigTab::Behavior),
             // Save/Cancel are on all tabs
             ConfigField::Save | ConfigField::Cancel => None,
         }
@@ -337,6 +368,8 @@ pub struct ConfigUI {
     original_config: Config,
     /// When true, the next keypress will be captured as the global hotkey
     pub recording_hotkey: bool,
+    /// When true, the built-in hotkeys help overlay is shown instead of the settings panel
+    pub show_hotkeys: bool,
 }
 
 impl ConfigUI {
@@ -348,6 +381,7 @@ impl ConfigUI {
             config: config.clone(),
             original_config: config,
             recording_hotkey: false,
+            show_hotkeys: false,
         }
     }
 
@@ -391,6 +425,7 @@ impl ConfigUI {
         self.visible = true;
         self.selected = 0;
         self.current_tab = ConfigTab::Effects;
+        self.show_hotkeys = false;
     }
 
     pub fn next_tab(&mut self) {
@@ -537,6 +572,10 @@ impl ConfigUI {
             }
             ConfigField::GlobalHotkey => {
                 self.recording_hotkey = true;
+                None
+            }
+            ConfigField::ShowHotkeys => {
+                self.show_hotkeys = true;
                 None
             }
             ConfigField::Save => Some(ConfigAction::Save),
@@ -801,6 +840,10 @@ impl ConfigUI {
         height_cells: usize,
         is_high_dpi: bool,
     ) -> Vec<Vec<RenderCell>> {
+        if self.show_hotkeys {
+            return self.render_hotkeys(width_cells, height_cells);
+        }
+
         let panel_width = 44;
         let panel_height = self.panel_height();
 
@@ -848,6 +891,117 @@ impl ConfigUI {
                 });
             }
 
+            rows.push(cells);
+        }
+
+        rows
+    }
+
+    /// Render the built-in hotkeys help overlay (a single centered panel).
+    fn render_hotkeys(&self, width_cells: usize, height_cells: usize) -> Vec<Vec<RenderCell>> {
+        let fg = self.fg_color();
+        let bright = self.bright_color();
+        let dim = self.dim_color();
+        let border = self.border_color();
+        let bg = self.bg_color();
+
+        // Build content lines: (text, is_footer).
+        let key_width = 18;
+        let mut content: Vec<(String, bool)> = Vec::with_capacity(BUILT_IN_HOTKEYS.len() + 3);
+        content.push((String::new(), false)); // spacer under the title border
+        for (key, desc) in BUILT_IN_HOTKEYS {
+            content.push((
+                format!("{:<width$} {}", key, desc, width = key_width),
+                false,
+            ));
+        }
+        content.push((String::new(), false)); // spacer
+        content.push(("Esc / Enter = back".to_string(), true)); // footer
+
+        let inner_width = content
+            .iter()
+            .map(|(s, _)| s.len())
+            .max()
+            .unwrap_or(0)
+            .max(24);
+        let panel_width = inner_width + 4; // border + margin on each side
+        let panel_height = content.len() + 2; // top + bottom border
+
+        let start_col = (width_cells.saturating_sub(panel_width)) / 2;
+        let start_row = (height_cells.saturating_sub(panel_height)) / 2;
+
+        let mut rows: Vec<Vec<RenderCell>> = Vec::with_capacity(height_cells);
+
+        for row in 0..height_cells {
+            let mut cells: Vec<RenderCell> = Vec::with_capacity(width_cells);
+            for col in 0..width_cells {
+                let in_panel = col >= start_col
+                    && col < start_col + panel_width
+                    && row >= start_row
+                    && row < start_row + panel_height;
+
+                if !in_panel {
+                    cells.push(RenderCell {
+                        c: ' ',
+                        fg: [0.0; 4],
+                        bg: [0.0, 0.0, 0.0, 0.0],
+                        is_wide: false,
+                    });
+                    continue;
+                }
+
+                let panel_col = col - start_col;
+                let panel_row = row - start_row;
+
+                let (c, cell_fg, cell_bg) = if panel_row == 0 {
+                    // Top border with a centered title.
+                    if panel_col == 0 {
+                        ('┌', border, bg)
+                    } else if panel_col == panel_width - 1 {
+                        ('┐', border, bg)
+                    } else {
+                        let title = " Built-in Hotkeys ";
+                        let title_start = (panel_width.saturating_sub(title.len())) / 2;
+                        if panel_col >= title_start && panel_col < title_start + title.len() {
+                            let ch = title.chars().nth(panel_col - title_start).unwrap_or('─');
+                            (ch, bright, bg)
+                        } else {
+                            ('─', border, bg)
+                        }
+                    }
+                } else if panel_row == panel_height - 1 {
+                    // Bottom border.
+                    if panel_col == 0 {
+                        ('└', border, bg)
+                    } else if panel_col == panel_width - 1 {
+                        ('┘', border, bg)
+                    } else {
+                        ('─', border, bg)
+                    }
+                } else if panel_col == 0 || panel_col == panel_width - 1 {
+                    ('│', border, bg)
+                } else if panel_col == 1 {
+                    // Left margin.
+                    (' ', fg, bg)
+                } else {
+                    let (line, is_footer) = &content[panel_row - 1];
+                    let line_col = panel_col - 2;
+                    if line_col < line.len() {
+                        let ch = line.chars().nth(line_col).unwrap_or(' ');
+                        let line_fg = if *is_footer { dim } else { fg };
+                        (ch, line_fg, bg)
+                    } else {
+                        (' ', fg, bg)
+                    }
+                };
+
+                cells.push(RenderCell {
+                    c,
+                    fg: cell_fg,
+                    bg: cell_bg,
+                    is_wide: false,
+                });
+            }
             rows.push(cells);
         }
 

@@ -140,13 +140,19 @@ Mouse → hit-test layout tree → target pane
 
 **Keyboard Shortcuts:**
 - `Ctrl+Shift+Enter` - Add new pane
+- `Ctrl+Shift+W` - Close focused pane
+- `Ctrl+Shift+K` - Kill focused pane (SIGKILL)
+- `Ctrl+Shift+Arrow` - Move focus between panes
 - `Ctrl+,` or `Ctrl+Shift+P` - Toggle config UI overlay
+- `Ctrl+Shift+F` - Toggle search
 - `Ctrl+Shift+G` - Toggle debug grid (shows cell boundaries)
 - `Ctrl+Shift+C` - Copy selection
 - `Ctrl+Shift+V` - Paste
 - `Shift+PageUp` / `Shift+PageDown` - Scroll history
 - Mouse wheel - Scroll history
 - Click on pane - Focus that pane
+
+**Built-in hotkeys help:** open Settings (`Ctrl+,`) → *Behavior* tab → `Built-in hotkeys` for a complete in-app shortcut reference.
 
 ## Crate Structure
 
