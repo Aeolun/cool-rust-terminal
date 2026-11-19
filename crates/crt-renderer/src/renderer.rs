@@ -388,6 +388,11 @@ impl Renderer {
         self.last_stats
     }
 
+    /// Resume animation without advancing through time spent not rendering.
+    pub fn reset_frame_clock(&mut self, now: Instant) {
+        self.last_frame = now;
+    }
+
     /// Reset CRT time to replay the power-on animation
     pub fn replay_power_on(&mut self) {
         self.crt_pipeline.reset_time();

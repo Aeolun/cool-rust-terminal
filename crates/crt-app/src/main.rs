@@ -2,6 +2,7 @@
 // ABOUTME: Sets up window, event loop, and coordinates terminal/rendering.
 
 mod config_ui;
+mod frame_clock;
 mod search_ui;
 
 use std::collections::{HashMap, HashSet};
@@ -14,7 +15,7 @@ use arboard::Clipboard;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, StartCause, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Icon, Window, WindowAttributes, WindowId};
 
@@ -24,6 +25,7 @@ use crt_core::{BdfFont, ColorScheme, Config, Font, ScanlineMode, SessionData, Up
 use crt_layout::{Direction, LayoutTree, PaneId};
 use crt_renderer::{EffectParams, RenderCell, Renderer};
 use crt_terminal::{TermMode, Terminal};
+use frame_clock::FrameClock;
 use search_ui::{SearchAction, SearchUI};
 
 /// Convert an ANSI color from alacritty_terminal to our [f32; 4] format
@@ -318,9 +320,8 @@ const SCROLLBAR_VISIBLE_DURATION: Duration = Duration::from_millis(800);
 const SCROLLBAR_HOVER_PROXIMITY: f64 = 20.0; // Show scrollbar when mouse within this many px of edge
 const SCROLLBAR_WIDTH: f32 = 4.0;
 const DEFAULT_FPS: u32 = 60; // Fallback if we can't detect refresh rate
-/// While the window isn't drawable (hidden/occluded) we stop rendering but keep
-/// polling at this slow cadence so the global show/hide hotkey stays responsive.
-const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// Keep application housekeeping responsive even without a render timer.
+const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(50);
 const DOUBLE_CLICK_THRESHOLD: Duration = Duration::from_millis(500);
 const HIGH_DPI_SCALE_THRESHOLD: f64 = 1.5;
 
@@ -478,8 +479,8 @@ struct App {
     clipboard: Option<Clipboard>,
     last_resize: Option<Instant>,
     last_scroll: HashMap<PaneId, Instant>,
-    last_frame: Instant,
-    frame_duration: Duration,
+    frame_clock: FrameClock,
+    next_housekeeping: Instant,
     fps_samples: [f32; 60],
     fps_sample_idx: usize,
     /// Rolling buffer of render work times in seconds (excludes vsync/sleep)
@@ -537,8 +538,7 @@ struct App {
     rmrf_was_detected: HashSet<PaneId>,
     /// Panes currently showing "sudo" on screen (rainbow effect while visible)
     sudo_active_panes: HashSet<PaneId>,
-    /// Whether the window is currently not drawable (occluded, minimized, or
-    /// fully covered). Paired with `hidden_by_hotkey` to pause the render loop.
+    window_focused: bool,
     occluded: bool,
     /// Content-state snapshot from the previous frame. `None` forces the first
     /// frame to be a full render (the offscreen texture must be populated before
@@ -573,8 +573,10 @@ impl App {
             clipboard: Clipboard::new().ok(),
             last_resize: None,
             last_scroll: HashMap::new(),
-            last_frame: Instant::now(),
-            frame_duration: Duration::from_nanos(1_000_000_000 / (DEFAULT_FPS * 2) as u64),
+            frame_clock: FrameClock::new(Duration::from_nanos(
+                1_000_000_000 / (DEFAULT_FPS * 2) as u64,
+            )),
+            next_housekeeping: Instant::now(),
             fps_samples: [0.0; 60],
             fps_sample_idx: 0,
             render_time_samples: [0.0; 100],
@@ -611,6 +613,7 @@ impl App {
             rmrf_glitch_start: HashMap::new(),
             rmrf_was_detected: HashSet::new(),
             sudo_active_panes: HashSet::new(),
+            window_focused: false,
             occluded: false,
             last_snapshot: None,
         }
@@ -1657,7 +1660,7 @@ impl App {
 
         // 3. Timed overlays — dirty for the entire animation window plus one
         //    extra frame so the disappearance frame is still rebuilt.
-        let frame = self.frame_duration;
+        let frame = self.frame_clock.interval();
         let timed_dirty = {
             // Resize indicator
             let resize = self
@@ -2883,70 +2886,83 @@ impl App {
                     self.hidden_by_hotkey = true;
                     tracing::info!("Global hotkey triggered: hiding window");
                 }
+                self.sync_frame_activity();
             }
+        }
+    }
+
+    fn sync_frame_activity(&mut self) {
+        if let Some(window) = &self.window {
+            if self.frame_clock.update_window(
+                self.window_focused,
+                self.hidden_by_hotkey,
+                self.occluded,
+            ) {
+                window.request_redraw();
+            }
+        }
+    }
+
+    fn poll_housekeeping(&mut self, event_loop: &ActiveEventLoop) {
+        // These tasks must keep running even when no redraws are delivered.
+        self.poll_global_hotkey();
+        if let Some(rx) = &self.update_receiver {
+            match rx.try_recv() {
+                Ok(info) => {
+                    if info.update_available {
+                        tracing::info!(
+                            "Update available: v{} -> v{}",
+                            info.current_version,
+                            info.latest_version
+                        );
+                    }
+                    self.update_info = Some(info);
+                    self.update_receiver = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => self.update_receiver = None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        for pane_id in self.check_exited_terminals() {
+            tracing::info!("Shell in pane {:?} exited", pane_id);
+            self.close_pane(pane_id);
+        }
+        if self.layout.panes().is_empty() {
+            tracing::info!("All panes closed, exiting");
+            event_loop.exit();
         }
     }
 }
 
 impl ApplicationHandler for App {
-    /// Drive the frame clock. This runs on every loop iteration, *before* the
-    /// loop sleeps — unlike `RedrawRequested`, which the OS withholds while the
-    /// window isn't drawable. Scheduling the next frame here is what prevents the
-    /// 100%-CPU spin: a hidden/occluded window simply parks instead of busy-
-    /// waiting on a `WaitUntil` deadline that has already elapsed.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // The global show/hide hotkey is system-wide and never arrives as a winit
-        // event, so we must poll it here too — otherwise, while hidden (and thus
-        // receiving no RedrawRequested), it could never be toggled back on.
-        self.poll_global_hotkey();
-
-        if self.hidden_by_hotkey || self.occluded {
-            // Window isn't visible: don't render. Poll slowly so the hotkey stays
-            // responsive rather than spinning a core.
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
-                Instant::now() + HIDDEN_POLL_INTERVAL,
-            ));
+        if self.window.is_none() {
             return;
         }
 
-        if self.window.is_some() {
-            // Park the thread until the next frame deadline. We deliberately do
-            // NOT call `request_redraw()` here: doing so posts an immediate
-            // redraw every loop iteration, which makes winit ignore the
-            // `WaitUntil` deadline and busy-spin (RedrawRequested fires, the
-            // frame-rate limiter skips it as "too soon", and we loop again at
-            // full tilt — ~88% of a core for a static screen). Instead, the
-            // redraw is requested from `new_events` only when the timer actually
-            // elapses (StartCause::ResumeTimeReached), so the thread genuinely
-            // sleeps between frames.
-            //
-            // Never schedule a deadline in the past. `last_frame` only advances
-            // when a frame actually renders; if the OS stops delivering redraws
-            // for a reason we can't flag (e.g. macOS app-hide via Cmd+H emits no
-            // Occluded event), `last_frame + frame_duration` freezes in the past
-            // and `WaitUntil(past)` becomes a 100%-CPU busy-loop. Clamping to a
-            // full frame from now caps the worst case at the frame rate instead.
-            let now = Instant::now();
-            let mut next_frame = self.last_frame + self.frame_duration;
-            if next_frame <= now {
-                next_frame = now + self.frame_duration;
-            }
-            event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(next_frame));
+        let now = Instant::now();
+        if now >= self.next_housekeeping {
+            self.poll_housekeeping(event_loop);
+            self.next_housekeeping = Instant::now() + HOUSEKEEPING_INTERVAL;
         }
+
+        // Don't request redraws here: that would wake the loop immediately and
+        // spin even when the next frame isn't due. This timer also runs while
+        // inactive, but then its only job is CPU-side housekeeping.
+        let deadline = self
+            .frame_clock
+            .next_deadline(Instant::now())
+            .map_or(self.next_housekeeping, |frame| {
+                frame.min(self.next_housekeeping)
+            });
+        event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
     }
 
-    /// Kick a redraw when the frame-pacing timer elapses (or on first start).
-    /// Pairs with `about_to_wait`, which parks the loop on a `WaitUntil`
-    /// deadline without forcing a redraw. This is what keeps the render loop at
-    /// the target frame rate while letting the thread sleep in between.
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        if self.hidden_by_hotkey || self.occluded {
-            return;
-        }
-        if matches!(
-            cause,
-            StartCause::ResumeTimeReached { .. } | StartCause::Init
-        ) {
+        if matches!(cause, StartCause::ResumeTimeReached { .. })
+            && self.frame_clock.is_due(Instant::now())
+        {
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
@@ -3027,13 +3043,14 @@ impl ApplicationHandler for App {
             .map(|mhz| mhz / 1000)
             .unwrap_or(DEFAULT_FPS);
         let target_fps = (refresh_hz * 2).min(240); // 2x refresh rate, capped at 240fps
-        self.frame_duration = Duration::from_nanos(1_000_000_000 / target_fps as u64);
+        self.frame_clock = FrameClock::new(Duration::from_nanos(1_000_000_000 / target_fps as u64));
         tracing::info!(
             "Monitor refresh rate: {}Hz, targeting {}fps",
             refresh_hz,
             target_fps
         );
 
+        self.window_focused = window.has_focus();
         self.window = Some(window);
         self.renderer = Some(renderer);
 
@@ -3094,6 +3111,7 @@ impl ApplicationHandler for App {
 
         // Initialize global hotkey manager
         self.init_global_hotkey();
+        self.sync_frame_activity();
 
         let (cols, rows) = self.renderer.as_ref().unwrap().grid_size();
         tracing::info!("Window and renderer initialized ({}x{} cells)", cols, rows);
@@ -3193,82 +3211,54 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                // The OS can still request redraws after focus or visibility is
+                // lost. Check here as well as in the frame scheduler.
+                let Some(tick) = self.frame_clock.begin_frame(now) else {
+                    return;
+                };
+                if tick.resumed {
+                    // Timed overlays may have expired and terminal output may
+                    // have accumulated while no frames were being drawn.
+                    self.last_snapshot = None;
+                    if let Some(renderer) = &mut self.renderer {
+                        renderer.reset_frame_clock(now);
+                    }
+                }
+
                 #[cfg(feature = "tracy")]
                 if let Some(c) = tracy_client::Client::running() {
                     c.frame_mark();
                 }
 
                 let _span = tracing::trace_span!("redraw_requested").entered();
-
-                // Check for update check results
-                if let Some(ref rx) = self.update_receiver {
-                    if let Ok(info) = rx.try_recv() {
-                        if info.update_available {
-                            tracing::info!(
-                                "Update available: v{} -> v{}",
-                                info.current_version,
-                                info.latest_version
-                            );
-                        }
-                        self.update_info = Some(info);
-                    }
-                }
-
-                // Check for exited terminals and close their panes
-                let exited = self.check_exited_terminals();
-                for pane_id in exited {
-                    tracing::info!("Shell in pane {:?} exited", pane_id);
-                    self.close_pane(pane_id);
-                }
-
-                // Exit if no panes remain
-                if self.layout.panes().is_empty() {
-                    tracing::info!("All panes closed, exiting");
-                    event_loop.exit();
-                    return;
-                }
-
-                // Frame rate limiting - skip render if too soon
-                let now = Instant::now();
-                let elapsed = now.duration_since(self.last_frame);
-                if elapsed >= self.frame_duration {
-                    let dt = elapsed.as_secs_f32();
-                    self.last_frame = now;
-                    let render_start = Instant::now();
-                    self.render_terminals(dt);
-                    let render_time = render_start.elapsed().as_secs_f32();
-                    self.render_time_samples[self.render_time_idx] = render_time;
-                    self.render_time_idx =
-                        (self.render_time_idx + 1) % self.render_time_samples.len();
-                }
-
-                // The next frame is scheduled in `about_to_wait`, which runs every
-                // loop iteration regardless of whether the OS delivers a redraw.
-                // Re-arming here instead would peg a CPU core whenever the window
-                // stops being drawable (hidden/occluded/minimized): the control
-                // flow would stay stuck on an already-elapsed `WaitUntil`.
+                let render_start = Instant::now();
+                self.render_terminals(tick.elapsed.as_secs_f32());
+                let render_time = render_start.elapsed().as_secs_f32();
+                self.render_time_samples[self.render_time_idx] = render_time;
+                self.render_time_idx = (self.render_time_idx + 1) % self.render_time_samples.len();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.modifiers = modifiers.state();
             }
             WindowEvent::Occluded(occluded) => {
-                // When the window is fully covered or minimized the OS stops
-                // delivering RedrawRequested. Track it so `about_to_wait` pauses
-                // the animation loop instead of spinning on a stale deadline.
                 self.occluded = occluded;
-                if !occluded {
-                    if let Some(window) = &self.window {
-                        window.request_redraw();
-                    }
-                }
+                self.sync_frame_activity();
             }
-            WindowEvent::Focused(true) if self.hidden_by_hotkey => {
-                // Re-show window when activated (e.g. dock click) after hiding via hotkey
-                if let Some(window) = &self.window {
-                    window.set_visible(true);
+            WindowEvent::Focused(focused) => {
+                self.window_focused = focused;
+                if focused && self.hidden_by_hotkey {
+                    // Re-show window when activated (e.g. dock click) after hiding via hotkey.
+                    if let Some(window) = &self.window {
+                        window.set_visible(true);
+                    }
+                    self.hidden_by_hotkey = false;
+                    tracing::info!("Window re-shown via focus (was hidden by hotkey)");
                 }
-                self.hidden_by_hotkey = false;
-                tracing::info!("Window re-shown via focus (was hidden by hotkey)");
+                if !focused {
+                    self.beam_step_held = false;
+                }
+                self.sync_frame_activity();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
