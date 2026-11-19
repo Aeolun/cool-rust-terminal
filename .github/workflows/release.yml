@@ -261,7 +261,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/linux-modern/*.deb
+            artifacts/linux-modern/target/debian/*.deb
             artifacts/linux-modern/*.tar.gz
             artifacts/linux-compat/*.tar.gz
             artifacts/macos-x86_64-apple-darwin/*.dmg
